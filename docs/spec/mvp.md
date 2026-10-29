@@ -11,6 +11,14 @@
 - **Agent** — Node.js-сервис, Windows/macOS/Linux. Слушает только `127.0.0.1`. Хранит всё своё состояние в Agent Home.
 - **Launcher** — минимальный процесс, который запускает текущую версию Agent и откатывает неудачное обновление. Ставится вместе с первой версией Agent.
 - **Studio** — веб-сервер и фронт, запускается локально, однопользовательская, без логина и без БД (конфиг-файл).
+- **protocol** — общий пакет с типами сообщений между Agent, Studio-сервером и фронтом.
+
+## Технологии
+
+- TypeScript, Node.js 22+, npm workspaces: `agent`, `launcher`, `studio`, `protocol`.
+- **Протокол Studio ↔ Agent**: один HTTP-порт на Agent. WebSocket с JSON-сообщениями `request {id, method, params}` / `response {id, result | error}` / `event {sessionId, seq, ...}`. Access Token передаётся при установке соединения. События Session нумеруются сквозным `seq` и пишутся в лог Session. `subscribe {sessionId, fromSeq}` досылает историю, а затем стримит новые события. Загрузка бандла для Agent Update — HTTP `PUT /update` с токеном в заголовке.
+- **Studio**: браузер общается только со Studio-сервером (`node:http` + `ws`). Studio-сервер держит Connection, SSH-туннели и Access Token и ретранслирует запросы и события, добавляя `agentId`. Фронт — React + Vite.
+- **Launcher** работает как пользовательский сервис (от пользователя ОС, без прав администратора): macOS — LaunchAgent, Linux — `systemd --user` + `loginctl enable-linger`, Windows — Task Scheduler при запуске системы. Установка: `horizon-launcher install` / `uninstall`. На macOS Agent стартует только после входа пользователя (для выделенной машины нужен автологин).
 
 ## Требования
 
@@ -48,9 +56,4 @@
 21. Если новая версия не подтвердила работоспособность за N секунд, Launcher откатывается на предыдущую. Studio показывает результат обновления.
 
 ## Вне MVP
-Setup Step; шаринг Task; Role и Task с несколькими Session; Engine Credentials отдельно для каждого Member и их настройка из Studio; Engine кроме Claude Code; логины и несколько User в Studio; аудит; TLS; отдельная shell-консоль в Task Directory; уведомления о Waiting вне Studio.
-
-## Открытые вопросы
-- Стек фронта Studio.
-- Формат протокола Studio ↔ Agent (предположительно WebSocket + JSON).
-- Как Launcher регистрируется как сервис на каждой ОС (systemd / launchd / Windows Service).
+Setup Step; шаринг Task; Role и Task с несколькими Session; Engine Credentials отдельно для каждого Member и их настройка из Studio; Engine кроме Claude Code; логины и несколько User в Studio; аудит; TLS; отдельная shell-консоль в Task Directory; уведомления о Waiting вне Studio; просмотр файлов и diff в Task Directory; стрим окна разрабатываемого приложения с управлением (отдельный канал, скорее всего WebRTC).
