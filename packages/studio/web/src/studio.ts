@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { AgentStatus, AgentsEvent, Response, StudioSessionEvent, StudioTasksEvent, Task } from '@horizon/protocol';
+import type { AgentStatus, AgentsEvent, Response, StudioSessionEvent, StudioShellEvent, StudioTasksEvent, Task } from '@horizon/protocol';
 
 /** The browser's connection to the Studio server: the Agent list, their Tasks, Session events and requests. */
 export function useStudio() {
@@ -10,6 +10,7 @@ export function useStudio() {
   const ws = useRef<WebSocket>(null);
   const pending = useRef(new Map<number, (res: Response) => void>());
   const nextId = useRef(1);
+  const shells = useRef(new Map<string, (e: StudioShellEvent) => void>());
 
   useEffect(() => {
     let retry: number;
@@ -20,11 +21,17 @@ export function useStudio() {
       socket.onopen = () => setConnected(true);
       socket.onclose = () => {
         setConnected(false);
+        // The Studio server closes this window's shells when the connection drops.
+        for (const [key, listener] of shells.current) {
+          const [agentId, shellId] = key.split(' ');
+          listener({ type: 'shell', agentId, shellId, exit: { code: -1, reason: 'The connection to the Studio server was lost.' } });
+        }
         retry = window.setTimeout(open, 2000);
       };
       socket.onmessage = (e) => {
-        const msg = JSON.parse(e.data) as AgentsEvent | StudioTasksEvent | StudioSessionEvent | Response;
+        const msg = JSON.parse(e.data) as AgentsEvent | StudioTasksEvent | StudioSessionEvent | StudioShellEvent | Response;
         if (msg.type === 'agents') setAgents(msg.agents);
+        else if (msg.type === 'shell') shells.current.get(`${msg.agentId} ${msg.shellId}`)?.(msg);
         else if (msg.type === 'tasks') setTasks((t) => ({ ...t, [msg.agentId]: msg.tasks }));
         else if (msg.type === 'event') {
           // History may arrive again (resubscribing, another tab), so take only new seq values.
@@ -53,5 +60,12 @@ export function useStudio() {
     return new Promise((resolve) => pending.current.set(id, resolve));
   }
 
-  return { agents, connected, tasks, setTasks, events, request };
+  /** Listens to one shell's output and exit; returns a function that stops listening. */
+  function onShell(agentId: string, shellId: string, listener: (e: StudioShellEvent) => void) {
+    const key = `${agentId} ${shellId}`;
+    shells.current.set(key, listener);
+    return () => void shells.current.delete(key);
+  }
+
+  return { agents, connected, tasks, setTasks, events, request, onShell };
 }

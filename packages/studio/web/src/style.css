@@ -291,3 +291,28 @@ aside h3 {
   text-transform: uppercase;
   opacity: 0.6;
 }
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 40vh;
+  min-height: 12rem;
+  border-top: 1px solid var(--line);
+  padding-bottom: 0.5rem;
+}
+.shell-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding: 0.5rem 0;
+}
+.shell-head > span:first-child {
+  margin-right: auto;
+}
+.shell-term {
+  flex: 1;
+  min-height: 0;
+  background: #000;
+  padding: 0.25rem;
+}

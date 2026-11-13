@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -650,4 +650,65 @@ test('Permission Mode auto: admin only unless allowUserAuto; user auto Tasks swi
   const adminAuto = readdirSync(join(home, 'tasks')).map(stored).find((t) => t.name === 'admin auto');
   assert.equal(adminAuto.permissionMode, 'auto');
   a3.stop();
+});
+
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const waitUntil = async (done: () => boolean) => {
+  while (!done()) await new Promise((r) => setTimeout(r, 10));
+};
+
+test('Shell: admin only, starts in the Task Directory, ends with its connection and when the Task completes', { timeout: 20_000, skip: process.platform === 'win32' && 'uses a POSIX shell' }, async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
+  const a = await startAgent(home, 0, { engine: echo });
+  t.after(() => a.stop());
+  const port = (a.server.address() as AddressInfo).port;
+  const adminWs = await connect(port, a.adminToken!);
+  const output = new Map<string, string>();
+  const exited = new Set<string>();
+  adminWs.on('message', (d) => {
+    const m = JSON.parse(String(d));
+    if (m.type !== 'shell') return;
+    if (m.data) output.set(m.shellId, (output.get(m.shellId) ?? '') + m.data);
+    if (m.exit) exited.add(m.shellId);
+  });
+  const admin = client(adminWs);
+  assert.equal((await admin.call('agent.info')).shell, true);
+  const task: Task = await admin.call('task.create', { name: 'shell' });
+
+  // The shell prints its directory and pid; the pattern skips the echoed command line.
+  const probe = async (shellId: string) => {
+    await admin.call('shell.input', { shellId, data: "printf 'cwd=%s pid=%s\\n' \"$(pwd -P)\" $$\r" });
+    const found = () => (output.get(shellId) ?? '').match(/cwd=(\/\S+) pid=(\d+)/);
+    await waitUntil(() => !!found());
+    return { cwd: found()![1], pid: Number(found()![2]) };
+  };
+  const { shellId } = await admin.call('shell.open', { taskId: task.id, cols: 80, rows: 24 });
+  const first = await probe(shellId);
+  assert.equal(first.cwd, realpathSync(join(home, 'tasks', task.id, 'workspace')));
+  assert.equal(await admin.call('shell.resize', { shellId, cols: 120, rows: 40 }), null);
+
+  const { token: bobToken } = await admin.call('member.create', { name: 'bob', accessLevel: 'user' });
+  const bob = client(await connect(port, bobToken));
+  const bobTask: Task = await bob.call('task.create', { name: 'bob task' });
+  assert.equal(await bob.call('shell.open', { taskId: bobTask.id, cols: 80, rows: 24 }), undefined, 'a user cannot open a shell');
+  assert.equal(await bob.call('shell.input', { shellId, data: 'x' }), undefined, 'nor use one opened by another connection');
+  bob.close();
+
+  // Completing the Task ends its shell, and a completed Task has none.
+  await admin.call('task.complete', { taskId: task.id });
+  await waitUntil(() => exited.has(shellId) && !alive(first.pid));
+  assert.equal(await admin.call('shell.open', { taskId: task.id, cols: 80, rows: 24 }), undefined, 'a completed Task has no shell');
+
+  // A paused Task has one, and it ends when its connection closes.
+  await admin.call('task.reopen', { taskId: task.id });
+  const second = await probe((await admin.call('shell.open', { taskId: task.id, cols: 80, rows: 24 })).shellId);
+  admin.close();
+  await waitUntil(() => !alive(second.pid));
 });

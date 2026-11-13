@@ -25,6 +25,8 @@ export interface AgentHello extends AgentInfo {
   engines: ({ id: EngineId } & EngineAvailability)[];
   /** Permission Modes this Member may choose for a new Task. */
   permissionModes: PermissionMode[];
+  /** Whether this Agent can open shell consoles; only admins can use them. */
+  shell: boolean;
 }
 
 /** A Member without secrets, for management from Studio (admin only). */
@@ -151,6 +153,22 @@ export interface AgentsEvent {
 export interface TasksEvent {
   type: 'tasks';
   tasks: Task[];
+}
+
+/**
+ * Output or exit of a shell console. The Agent sends it only to the connection that opened the shell
+ * (`shell.open {taskId, cols, rows}` → `{shellId}`; then `shell.input {shellId, data}`, `shell.resize {shellId, cols, rows}`, `shell.close {shellId}`).
+ */
+export interface ShellEvent {
+  type: 'shell';
+  shellId: string;
+  data?: string;
+  exit?: { code: number; reason?: string };
+}
+
+/** A ShellEvent forwarded by the Studio server to the browser that opened the shell. */
+export interface StudioShellEvent extends ShellEvent {
+  agentId: string;
 }
 
 /** A TasksEvent forwarded by the Studio server to the browser. */
