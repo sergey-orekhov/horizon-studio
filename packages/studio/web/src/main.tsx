@@ -7,6 +7,12 @@ import { Members } from './members.tsx';
 import { Shell } from './shell.tsx';
 import { Context } from './context.tsx';
 import { Usage } from './usage.tsx';
+// Fonts ship with Studio: it must work without internet access.
+import '@fontsource/ibm-plex-sans/latin-400.css';
+import '@fontsource/ibm-plex-sans/latin-500.css';
+import '@fontsource/ibm-plex-sans/latin-600.css';
+import '@fontsource/ibm-plex-mono/latin-400.css';
+import '@fontsource/ibm-plex-mono/latin-500.css';
 import './style.css';
 
 const modeLabel: Record<PermissionMode, string> = {
@@ -102,9 +108,6 @@ function App() {
     online.split(',').filter(Boolean).forEach(loadTasks);
   }, [online]);
   const onlineAgents = agents.filter((a) => a.state === 'online');
-  const allTasks = onlineAgents
-    .flatMap((agent) => (tasks[agent.id] ?? []).map((task) => ({ agent, task })))
-    .sort((a, b) => completedLast(a.task, b.task) || a.task.createdAt.localeCompare(b.task.createdAt));
   const engineChoices = onlineAgents.flatMap((agent) =>
     [...(agent.hello?.engines ?? [])].sort((a, b) => Number(a.id === 'codex') - Number(b.id === 'codex')).map((e) => ({
       key: JSON.stringify([agent.id, e.id]), agentId: agent.id, agentName: agent.name, engine: e.id,
@@ -201,27 +204,11 @@ function App() {
         {!connected && <p className="warn">No connection to the Studio server. Reconnecting…</p>}
         {agents.length === 0 && <p className="muted">Add a Connection to an Agent below.</p>}
 
-        {/* Tasks from all online Agents; Tasks of unreachable Agents are not shown. */}
-        <ul className="tasks">
-          {allTasks.map(({ agent, task: t }) => (
-            <li key={agent.id + t.id}>
-              <button
-                className={`${selected?.agentId === agent.id && selected.taskId === t.id ? 'active' : ''} ${t.state}`}
-                onClick={() => (setSelected({ agentId: agent.id, taskId: t.id }), (setMembersOf(undefined), setUsageOf(undefined)))}
-              >
-                {t.state === 'paused' && <span title="Paused">⏸ </span>}
-                {t.state === 'completed' && <span title="Completed">✓ </span>}
-                {t.name}
-                {agents.length > 1 && <span className="task-agent">{agent.name}</span>}
-              </button>
-            </li>
-          ))}
-        </ul>
         {engineChoices.length > 0 && (
           <form className="new-task" onSubmit={createTask}>
             <div>
               <input name="name" placeholder="New Task" required />
-              <button disabled={!defaultChoice}>+</button>
+              <button className="primary" disabled={!defaultChoice} aria-label="Create Task">+</button>
             </div>
             <select
               name="engineChoice"
@@ -254,65 +241,89 @@ function App() {
           </form>
         )}
 
-        <h3>Agent</h3>
+
+        {/* Tasks are grouped under their machine; an unreachable Agent's Tasks are not shown. */}
         {agents.map((a) => (
-          <div key={a.id} className="agent">
-            <div className="agent-head">
-              <span className={`dot ${a.state}`} />
+          <section key={a.id} className="machine">
+            <div className="machine-head">
+              <span className={`dot ${a.state}`} aria-hidden="true" />
               <strong>{a.name}</strong>
-              <span className="muted" title={a.hello ? `${a.hello.build ?? a.hello.version} · ${a.hello.member.name}` : undefined}>
-                {a.hello ? `v${a.hello.version} · ${a.hello.member.name}` : stateLabel[a.state]}
+              <span className="muted">{stateLabel[a.state]}</span>
+              <span className="machine-actions">
+                {a.hello?.member.accessLevel === 'admin' && (
+                  <button className="link" title="Plan limits and usage" onClick={() => (setUsageOf(a.id), setMembersOf(undefined))}>
+                    Usage
+                  </button>
+                )}
+                {a.hello?.member.accessLevel === 'admin' && (
+                  <button className="link" title="Members and Access Tokens" onClick={() => (setMembersOf(a.id), setUsageOf(undefined))}>
+                    Members
+                  </button>
+                )}
+                <button className="link" title="Remove Connection" aria-label={`Remove Connection ${a.name}`} onClick={() => request('connection.remove', { id: a.id })}>
+                  ×
+                </button>
               </span>
-              {a.hello?.member.accessLevel === 'admin' && (
-                <button className="link" title="Plan limits and usage" onClick={() => (setUsageOf(a.id), setMembersOf(undefined))}>
-                  Usage
-                </button>
-              )}
-              {a.hello?.member.accessLevel === 'admin' && (
-                <button className="link" title="Members and Access Tokens" onClick={() => (setMembersOf(a.id), setUsageOf(undefined))}>
-                  Member
-                </button>
-              )}
-              <button className="link" title="Remove Connection" onClick={() => request('connection.remove', { id: a.id })}>
-                ×
-              </button>
             </div>
-            {a.ssh && (
-              <p className="muted">
-                ssh {a.ssh.user ? `${a.ssh.user}@` : ''}
-                {a.ssh.host}
-              </p>
+            {a.state === 'online' && (
+              <ul className="tasks">
+                {[...(tasks[a.id] ?? [])].sort((x, y) => completedLast(x, y) || x.createdAt.localeCompare(y.createdAt)).map((t) => (
+                  <li key={t.id}>
+                    <button
+                      className={selected?.agentId === a.id && selected.taskId === t.id ? 'selected' : undefined}
+                      aria-current={selected?.agentId === a.id && selected.taskId === t.id ? 'true' : undefined}
+                      onClick={() => (setSelected({ agentId: a.id, taskId: t.id }), (setMembersOf(undefined), setUsageOf(undefined)))}
+                    >
+                      <span className="name">{t.name}</span>
+                      {t.state !== 'active' && <span className="state">{t.state === 'paused' ? 'Paused' : 'Completed'}</span>}
+                    </button>
+                  </li>
+                ))}
+              </ul>
             )}
-            {a.error && <p className="warn">{a.error}</p>}
-            {a.hello?.member.accessLevel === 'admin' && a.hello.build && (
-              <p className="muted">
-                Build {a.hello.build}{' '}
-                <button className="link" title="Upload the local Agent build" onClick={() => updateAgent(a.id)}>
-                  Update
-                </button>
-              </p>
-            )}
-            {updating[a.id] && !(updating[a.id].pending && a.hello?.lastUpdate?.version === updating[a.id].pending) && (
-              <p className="muted">{updating[a.id].text}</p>
-            )}
-            {a.hello?.lastUpdate && (
-              <p className={a.hello.lastUpdate.ok ? 'muted' : 'warn'}>
-                {a.hello.lastUpdate.ok
-                  ? `Updated to ${a.hello.lastUpdate.version}`
-                  : `Update to ${a.hello.lastUpdate.version} failed: ${a.hello.lastUpdate.error}; rolled back to the previous version`}{' '}
-                ({new Date(a.hello.lastUpdate.at).toLocaleString()})
-              </p>
-            )}
-            {a.state === 'online' &&
-              a.hello?.engines.map((e) => (
-                <p key={e.id} className={e.status === 'ready' ? 'muted' : 'warn'}>
-                  {engineName[e.id]}: {engineLabel[e.status]}{e.loginMethod && ` · ${loginLabel[e.loginMethod] ?? e.loginMethod}`}
-                  {e.status === 'no credentials' && (e.id === 'codex'
-                    ? <> · run <code>npx @openai/codex login</code> on the Agent machine</>
-                    : ' · sign in to Claude Code on the Agent machine')}
+            <div className="machine-details">
+              {a.hello && (
+                <p className="muted" title={a.hello.build ?? a.hello.version}>
+                  v{a.hello.version} · signed in as {a.hello.member.name}
                 </p>
-              ))}
-          </div>
+              )}
+              {a.ssh && (
+                <p className="muted">
+                  ssh {a.ssh.user ? `${a.ssh.user}@` : ''}
+                  {a.ssh.host}
+                </p>
+              )}
+              {a.error && <p className="warn">{a.error}</p>}
+              {a.hello?.member.accessLevel === 'admin' && a.hello.build && (
+                <p className="muted">
+                  Build {a.hello.build}{' '}
+                  <button className="link" title="Upload the local Agent build" onClick={() => updateAgent(a.id)}>
+                    Update
+                  </button>
+                </p>
+              )}
+              {updating[a.id] && !(updating[a.id].pending && a.hello?.lastUpdate?.version === updating[a.id].pending) && (
+                <p className="muted">{updating[a.id].text}</p>
+              )}
+              {a.hello?.lastUpdate && (
+                <p className={a.hello.lastUpdate.ok ? 'muted' : 'warn'}>
+                  {a.hello.lastUpdate.ok
+                    ? `Updated to ${a.hello.lastUpdate.version}`
+                    : `Update to ${a.hello.lastUpdate.version} failed: ${a.hello.lastUpdate.error}; rolled back to the previous version`}{' '}
+                  ({new Date(a.hello.lastUpdate.at).toLocaleString()})
+                </p>
+              )}
+              {a.state === 'online' &&
+                a.hello?.engines.map((e) => (
+                  <p key={e.id} className={e.status === 'ready' ? 'muted' : 'warn'}>
+                    {engineName[e.id]}: {engineLabel[e.status]}{e.loginMethod && ` · ${loginLabel[e.loginMethod] ?? e.loginMethod}`}
+                    {e.status === 'no credentials' && (e.id === 'codex'
+                      ? <> · run <code>npx @openai/codex login</code> on the Agent machine</>
+                      : ' · sign in to Claude Code on the Agent machine')}
+                  </p>
+                ))}
+            </div>
+          </section>
         ))}
 
         <details className="new-connection" open={agents.length === 0}>
@@ -328,7 +339,7 @@ function App() {
               <input name="sshPort" type="number" min={1} max={65535} placeholder="SSH port (22)" />
               <input name="sshKey" placeholder="Key path (~/.ssh/id_ed25519)" />
             </fieldset>
-            <button>Add</button>
+            <button className="primary">Add</button>
           </form>
         </details>
         {error && <p className="warn">{error}</p>}

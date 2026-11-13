@@ -87,7 +87,7 @@ export function Members({ request, self }: { request: Request; self: AgentHello[
           <option value="user">user: own Tasks only</option>
           <option value="admin">admin: all Tasks and Member management</option>
         </select>
-        <button>Create</button>
+        <button className="primary">Create</button>
       </form>
     </div>
   );

@@ -19,7 +19,14 @@ export function Shell({ agentId, taskId, request, onShell, onClose }: Props) {
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    const term = new Terminal({ fontFamily: '"IBM Plex Mono", ui-monospace, monospace', fontSize: 13, cursorBlink: true });
+    // The terminal takes the theme's colours from the design tokens.
+    const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const term = new Terminal({
+      fontFamily: '"IBM Plex Mono", ui-monospace, monospace',
+      fontSize: 13,
+      cursorBlink: true,
+      theme: { background: token('--code'), foreground: token('--fg'), cursor: token('--accent'), selectionBackground: token('--line') },
+    });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(box.current!);

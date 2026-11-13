@@ -1,127 +1,373 @@
+/* Studio design guide: docs/design/guide.md. Colours come only from these tokens. */
 :root {
-  font-family: system-ui, sans-serif;
-  color-scheme: light dark;
-  --line: #8884;
-  --soft: #8881;
+  color-scheme: light;
+  --bg: #eceef2;
+  --side: #dfe2e9;
+  --surface: #ffffff;
+  --code: #f4f5f8;
+  --fg: #15181f;
+  --muted: #565d6d;
+  --line: #c6cbd6;
+  --accent: #0a6c8f;
+  --on-accent: #ffffff;
+  --ok: #1a7350;
+  --wait: #8f5200;
+  --bad: #b3261e;
+
+  --sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --radius: 2px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #16191f;
+    --side: #0f1115;
+    --surface: #1e222a;
+    --code: #0f1115;
+    --fg: #dce1ea;
+    --muted: #98a1b1;
+    --line: #2f3540;
+    --accent: #5ccbeb;
+    --on-accent: #0f1115;
+    --ok: #6ccfa2;
+    --wait: #f0b35a;
+    --bad: #ff8f85;
+  }
+}
+
+* {
+  box-sizing: border-box;
 }
 body {
   margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.45 var(--sans);
 }
+code,
+pre {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+}
+h4 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 8px 0 4px;
+}
+p {
+  margin: 4px 0;
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.muted {
+  color: var(--muted);
+}
+.warn {
+  color: var(--bad);
+}
+
+/* Controls */
+button,
+input,
+select,
+textarea {
+  font: 13px/1.4 var(--sans);
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 4px 8px;
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+}
+button {
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+button:disabled,
+input:disabled,
+textarea:disabled,
+select:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 500;
+}
+button.danger {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: var(--on-accent);
+}
+button.link {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  color: var(--muted);
+}
+button.link:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+meter {
+  height: 8px;
+}
+details > summary {
+  cursor: pointer;
+}
+
+/* Layout: sidebar and main panel */
 .layout {
   display: grid;
-  grid-template-columns: 300px 1fr;
+  grid-template-columns: 250px minmax(0, 1fr);
   height: 100vh;
 }
 aside {
+  background: var(--side);
   border-right: 1px solid var(--line);
-  padding: 1rem;
+  padding: 12px 8px;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 aside h1 {
-  font-size: 1.2rem;
-  margin-top: 0;
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 4px;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 8px;
 }
 aside h1 img {
-  border-radius: 5px;
+  border-radius: var(--radius);
 }
 main {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 0 1.5rem;
+  min-width: 0;
+  padding: 0 16px;
 }
-.muted {
-  opacity: 0.6;
+@media (max-width: 720px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    height: auto;
+    min-height: 100vh;
+  }
+  aside {
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
 }
-.warn {
-  color: #d9480f;
-}
-.agent {
-  margin-bottom: 1.25rem;
-}
-.agent-head {
+
+/* Sidebar: new Task, machines with their Tasks, new Connection */
+aside form {
   display: flex;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 4px;
+}
+aside select,
+aside input {
+  width: 100%;
+  min-width: 0;
+}
+.new-task div {
+  display: flex;
+  gap: 4px;
+}
+.machine {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.machine-head {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 8px;
+  padding: 4px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--line);
 }
-.agent-head .link {
+.machine-head strong {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.machine-actions {
   margin-left: auto;
-}
-.agent-head .link + .link {
-  margin-left: 0;
-}
-.agent-head strong {
+  display: flex;
+  gap: 4px;
   white-space: nowrap;
 }
-.agent-head .muted {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.machine-details {
+  padding: 2px 4px;
+  font-size: 12px;
 }
-button.link {
-  background: none;
-  border: none;
-  cursor: pointer;
-  opacity: 0.6;
+.machine-details p {
+  margin: 2px 0;
 }
 .dot {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   flex: none;
   border-radius: 50%;
-  background: #999;
+  border: 2px solid var(--muted);
 }
 .dot.online {
-  background: #2f9e44;
+  background: var(--ok);
+  border-color: var(--ok);
 }
-.dot.offline,
+.dot.connecting {
+  border-color: var(--wait);
+}
 .dot.unauthorized {
-  background: #e03131;
+  background: var(--bad);
+  border-color: var(--bad);
 }
 .tasks {
   list-style: none;
   padding: 0;
-  margin: 0.5rem 0;
+  margin: 0;
 }
 .tasks button {
   width: 100%;
-  text-align: left;
-  padding: 0.35rem 0.5rem;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  cursor: pointer;
-  font: inherit;
-}
-.tasks button.active,
-.tasks button:hover {
-  background: var(--soft);
-}
-aside form {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
+  align-items: baseline;
+  gap: 8px;
+  text-align: left;
+  font-size: 13px;
+  padding: 4px 8px;
+  border: none;
+  background: none;
 }
-aside form input {
-  flex: 1;
+.tasks button:hover {
+  background: var(--surface);
+}
+.tasks button.selected {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.tasks .name {
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+.tasks .state {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.tasks button.selected .state {
+  color: var(--on-accent);
 }
 .new-connection form {
-  flex-direction: column;
-  margin-top: 0.5rem;
+  margin-top: 8px;
 }
 .new-connection fieldset {
   display: flex;
   flex-direction: column;
-  gap: inherit;
+  gap: 4px;
   margin: 0;
-  padding: 0.5rem;
-  border: 1px solid #333;
-  font-size: 0.85em;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 12px;
 }
+
+/* Task header */
+.task-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 -16px;
+  padding: 8px 16px;
+  background: var(--side);
+  border-bottom: 1px solid var(--line);
+}
+.task-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+.mode {
+  font-size: 12px;
+  font-weight: 400;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  vertical-align: middle;
+}
+.mode.auto {
+  color: var(--wait);
+  border-color: var(--wait);
+}
+.model {
+  font-size: 13px;
+  white-space: nowrap;
+}
+.session-pick {
+  font-size: 13px;
+  padding-top: 8px;
+}
+
+/* Context, Session totals */
+.context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 8px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+}
+.context meter {
+  width: 8rem;
+}
+.context table {
+  font-size: 12px;
+  border-collapse: collapse;
+}
+.context .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding-left: 16px;
+}
+.context details[open] {
+  flex-basis: 100%;
+  order: 1;
+}
+.context-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+/* Chat */
 .chat {
   display: flex;
   flex-direction: column;
@@ -133,179 +379,130 @@ aside form input {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: 8px;
+  padding: 12px 0;
 }
 .msg {
   white-space: pre-wrap;
-  line-height: 1.45;
+  max-width: 80ch;
 }
 .msg.user {
   align-self: flex-end;
-  max-width: 75%;
-  background: var(--soft);
-  padding: 0.5rem 0.75rem;
-  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 12px;
 }
 .tool {
-  font-size: 0.9rem;
-  border-left: 3px solid var(--line);
-  padding-left: 0.6rem;
+  background: var(--code);
+  border-radius: var(--radius);
+  font-size: 13px;
 }
-.tool.failed {
-  border-left-color: #e03131;
+.tool > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
 }
-.tool summary {
-  cursor: pointer;
+.tool-name {
+  font-weight: 500;
+  white-space: nowrap;
 }
-.tool pre {
+.tool-arg {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-state {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.tool-state.done {
+  color: var(--ok);
+}
+.tool-state.failed {
+  color: var(--bad);
+}
+.waiting {
+  color: var(--wait);
+  font-weight: 500;
+}
+.tool pre,
+.permission pre {
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 20rem;
   overflow: auto;
-  background: var(--soft);
-  padding: 0.5rem;
-}
-.composer {
-  display: flex;
-  gap: 0.5rem;
-  padding: 1rem 0;
-}
-.composer textarea {
-  flex: 1;
-  font: inherit;
+  margin: 0;
+  padding: 8px;
+  border-top: 1px solid var(--line);
 }
 .permission {
-  border: 1px solid #f08c00;
-  border-radius: 8px;
-  padding: 0.6rem 0.75rem;
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: 4px;
+  max-width: 80ch;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--wait);
+  border-radius: var(--radius);
 }
-.permission pre {
-  white-space: pre-wrap;
-  word-break: break-word;
-  background: var(--soft);
-  padding: 0.5rem;
+.permission.answered {
+  border-color: var(--line);
+}
+.permission-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--wait);
 }
 .permission .actions {
   display: flex;
-  gap: 0.5rem;
-}
-aside select {
-  width: 100%;
-}
-.mode {
-  font-size: 0.75rem;
-  font-weight: normal;
-  padding: 0.15rem 0.5rem;
-  border-radius: 999px;
-  background: var(--soft);
-  vertical-align: middle;
-}
-.mode.auto {
-  color: #d9480f;
-}
-.task-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
+  gap: 4px;
 }
 .divider {
-  text-align: center;
-  font-size: 0.8rem;
-  opacity: 0.6;
-  border-top: 1px dashed var(--line);
-  padding-top: 0.3rem;
-}
-.task-actions {
   display: flex;
-  gap: 0.5rem;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
 }
-button.danger {
-  color: #fff;
-  background: #e03131;
-  border: none;
-  border-radius: 4px;
-  padding: 0.2rem 0.6rem;
-}
-.tasks button.completed {
-  opacity: 0.55;
-}
-
-.members {
-  padding: 1rem;
-  overflow-y: auto;
-}
-.members table {
-  border-collapse: collapse;
-  margin: 1rem 0;
-}
-.members td {
-  padding: 0.4rem 0.8rem 0.4rem 0;
-  vertical-align: top;
-  border-bottom: 1px solid #333;
-}
-.members form {
-  display: flex;
-  gap: 0.5rem;
-}
-.members .token {
-  display: flex;
-  gap: 0.5rem;
-}
-.issued {
-  padding: 0.8rem;
-  border: 1px solid #c90;
-  border-radius: 6px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.5rem;
-}
-.issued code {
-  user-select: all;
-  font-size: 1.05em;
-}
-
-.task-agent {
-  margin-left: 0.5rem;
-  font-size: 0.8em;
-  opacity: 0.6;
-}
-.new-task {
-  flex-direction: column;
-  margin-bottom: 1rem;
-}
-.new-task div {
-  display: flex;
-  gap: 0.4rem;
-}
-.new-task input {
+.divider::before,
+.divider::after {
+  content: '';
   flex: 1;
+  border-top: 1px solid var(--line);
 }
-aside h3 {
-  margin: 1rem 0 0.5rem;
-  font-size: 0.85em;
-  text-transform: uppercase;
-  opacity: 0.6;
+.composer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 0 16px;
+}
+.composer textarea {
+  flex: 1;
+  font-size: 14px;
+  resize: vertical;
 }
 
+/* Shell */
 .shell {
   display: flex;
   flex-direction: column;
   height: 40vh;
   min-height: 12rem;
   border-top: 1px solid var(--line);
-  padding-bottom: 0.5rem;
+  padding-bottom: 8px;
 }
 .shell-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 1rem;
-  padding: 0.5rem 0;
+  gap: 4px 12px;
+  padding: 8px 0;
+  font-size: 13px;
 }
 .shell-head > span:first-child {
   margin-right: auto;
@@ -313,60 +510,68 @@ aside h3 {
 .shell-term {
   flex: 1;
   min-height: 0;
-  background: #000;
-  padding: 0.25rem;
+  background: var(--code);
+  padding: 4px;
+  border-radius: var(--radius);
 }
 
-.model {
-  white-space: nowrap;
-}
-
-.context {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.25rem 0.75rem;
-  padding: 0.5rem 0;
-  font-size: 0.9rem;
-}
-.context meter {
-  width: 8rem;
-}
-.context details table {
-  font-size: 0.85rem;
-}
-.context .num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  padding-left: 1rem;
-}
-.context-actions {
-  margin-left: auto;
-  display: flex;
-  gap: 0.5rem;
-}
-.session-pick {
-  font-size: 0.9rem;
-}
-.context details[open] {
-  flex-basis: 100%;
-  order: 1;
-}
-
+/* Members */
+.members,
 .usage {
+  padding: 16px 0;
   overflow-y: auto;
 }
+.members table {
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 13px;
+}
+.members td {
+  padding: 4px 12px 4px 0;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}
+.members form {
+  display: flex;
+  gap: 4px;
+}
+.members .token {
+  display: flex;
+  gap: 8px;
+}
+.issued {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--wait);
+  border-radius: var(--radius);
+}
+.issued code {
+  user-select: all;
+  font-size: 13px;
+}
+
+/* Usage */
 .engine-usage {
   border-top: 1px solid var(--line);
-  padding: 0.5rem 0 1rem;
+  padding: 8px 0 16px;
 }
 .usage-meta {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 12px;
+  font-size: 12px;
+}
+.limits {
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 8px 0;
 }
 .limits td {
-  padding: 0.15rem 0.75rem 0.15rem 0;
+  padding: 2px 12px 2px 0;
 }
 .limits .num {
   text-align: right;
@@ -375,8 +580,10 @@ aside h3 {
 .local-usage {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-  gap: 1rem;
+  gap: 16px;
+  font-size: 13px;
 }
 .local-usage ul {
-  margin: 0.25rem 0 0.75rem;
+  margin: 4px 0 12px;
+  padding-left: 16px;
 }

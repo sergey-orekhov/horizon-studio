@@ -53,7 +53,7 @@ export function Chat({ events, state, engine, engineName, onSend, onAnswer, read
         {stopped ? (
           <p className="muted">{readOnly ? 'This Session was reset. The Task continues in the current Session.' : state === 'paused' ? 'Task is paused' : 'Task is completed'}</p>
         ) : waiting ? (
-          <p className="warn">Waiting for your decision</p>
+          <p className="waiting">Waiting for your decision</p>
         ) : (
           busy && <p className="muted">{engineName} is working…</p>
         )}
@@ -76,7 +76,7 @@ export function Chat({ events, state, engine, engineName, onSend, onAnswer, read
           disabled={inputDisabled}
           rows={3}
         />
-        <button disabled={inputDisabled}>Send</button>
+        <button className="primary" disabled={inputDisabled}>Send</button>
       </form>
     </section>
   );
@@ -101,7 +101,9 @@ function Item({ item, results, answers, engineName, onAnswer }: ItemProps) {
       return (
         <details className={`tool ${res?.isError ? 'failed' : ''}`}>
           <summary>
-            {item.name} <span className="muted">{summary(item.input)}</span>
+            <span className="tool-name">{item.name}</span>
+            <code className="tool-arg">{summary(item.input)}</code>
+            <span className={`tool-state ${res ? (res.isError ? 'failed' : 'done') : ''}`}>{res ? (res.isError ? 'Failed' : 'Done') : 'Running'}</span>
           </summary>
           <pre>{JSON.stringify(item.input, null, 2)}</pre>
           {res && <pre>{res.output}</pre>}
@@ -111,9 +113,10 @@ function Item({ item, results, answers, engineName, onAnswer }: ItemProps) {
     case 'permission': {
       const answer = answers.get(item.requestId);
       return (
-        <div className="permission">
+        <div className={`permission ${answer ? 'answered' : ''}`}>
+          {!answer && <div className="permission-label">Waiting for your decision</div>}
           <div>
-            {engineName} wants to run <strong>{item.tool}</strong> <span className="muted">{summary(item.input)}</span>
+            {engineName} wants to run <strong>{item.tool}</strong> <code>{summary(item.input)}</code>
           </div>
           {item.reason && <div className="muted">{item.reason}</div>}
           <details>
@@ -126,7 +129,7 @@ function Item({ item, results, answers, engineName, onAnswer }: ItemProps) {
             </div>
           ) : (
             <div className="actions">
-              <button onClick={() => onAnswer(item.requestId, true, false)}>Allow</button>
+              <button className="primary" onClick={() => onAnswer(item.requestId, true, false)}>Allow</button>
               <button onClick={() => onAnswer(item.requestId, true, true)}>Always allow</button>
               <button onClick={() => onAnswer(item.requestId, false, false)}>Deny</button>
             </div>
