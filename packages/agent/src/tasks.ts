@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ContextUsage, EngineId, PermissionMode, SessionEvent, SessionItem, Task, TaskState } from '@horizon/protocol';
+import type { AccountUsage, ContextUsage, EngineId, PermissionMode, SessionEvent, SessionItem, SessionTotals, Task, TaskState } from '@horizon/protocol';
+import { addTotals } from './usage.ts';
 import type { Engine, EngineRun } from './engine.ts';
 import type { Member } from './members.ts';
 
@@ -16,6 +17,9 @@ interface StoredSession {
   context?: ContextUsage;
   /** Replaced by a newer Session when the context was reset; kept read-only. */
   archived?: boolean;
+  totals?: SessionTotals;
+  /** Totals of earlier Engine processes; the running one reports only its own. */
+  totalsBase?: SessionTotals;
 }
 
 interface StoredTask extends Task {
@@ -49,6 +53,8 @@ export class Tasks {
   private retentionMs: number;
   /** The Task list or the state of a Task changed. */
   onChange = () => {};
+  /** An Engine reported the account's plan limits after a turn. */
+  onAccountUsage = (_engine: EngineId, _usage: Omit<AccountUsage, 'at'>) => {};
 
   constructor(home: string, engines: ReadonlyMap<EngineId, Engine>, retentionDays: number) {
     this.dir = join(home, 'tasks');
@@ -218,17 +224,18 @@ export class Tasks {
 
   private public(t: StoredTask): Task {
     const deleteAt = t.completedAt && new Date(Date.parse(t.completedAt) + this.retentionMs).toISOString();
-    return { ...t, deleteAt, sessions: t.sessions.map(({ id, model, context, archived }) => ({ id, model, context, archived })) };
+    return { ...t, deleteAt, sessions: t.sessions.map(({ id, model, context, totals, archived }) => ({ id, model, context, totals, archived })) };
   }
 
   private load(task: StoredTask, sessionId: string): Session {
     let s = this.sessions.get(sessionId);
     if (!s) {
       const stored = task.sessions.find((x) => x.id === sessionId)!;
-      s = new Session(this.dir, task, stored, this.engines.get(task.engine) ?? unavailableEngine(task.engine), () => this.save(task), () =>
+      s = new Session(this.dir, task, stored, this.engines.get(task.engine) ?? unavailableEngine(task.engine), () => this.save(task), {
         // An unavailable model pauses the Task; resuming after choosing another model continues the turn.
-        this.move(task, 'active', 'paused', (session) => session.stop('paused', true)),
-      );
+        modelUnavailable: () => this.move(task, 'active', 'paused', (session) => session.stop('paused', true)),
+        accountUsage: (usage) => this.onAccountUsage(task.engine, usage),
+      });
       this.sessions.set(sessionId, s);
     }
     return s;
@@ -256,14 +263,14 @@ export class Session {
   private stored: StoredSession;
   private engine: Engine;
   private save: () => void;
-  private onModelUnavailable: () => void;
+  private notify: { modelUnavailable(): void; accountUsage(usage: Omit<AccountUsage, 'at'>): void };
 
-  constructor(dir: string, task: StoredTask, stored: StoredSession, engine: Engine, save: () => void, onModelUnavailable: () => void) {
+  constructor(dir: string, task: StoredTask, stored: StoredSession, engine: Engine, save: () => void, notify: Session['notify']) {
     this.task = task;
     this.stored = stored;
     this.engine = engine;
     this.save = save;
-    this.onModelUnavailable = onModelUnavailable;
+    this.notify = notify;
     this.cwd = join(dir, task.id, 'workspace');
     this.log = join(dir, task.id, 'sessions', `${stored.id}.jsonl`);
     const history = this.history(0);
@@ -396,6 +403,8 @@ export class Session {
 
   private start(): EngineRun {
     if (this.run) return this.run;
+    // A new Engine process counts from zero, so keep what earlier ones used.
+    this.stored.totalsBase = this.stored.totals;
     const generation = this.generation;
     const live = () => generation === this.generation;
     this.run = this.engine({
@@ -403,7 +412,14 @@ export class Session {
       permissionMode: this.task.permissionMode,
       resume: this.stored.engineSessionId,
       model: this.stored.model,
-      onModelUnavailable: () => live() && this.onModelUnavailable(),
+      onModelUnavailable: () => live() && this.notify.modelUnavailable(),
+      onUsage: ({ totals, account }) => {
+        if (!live()) return;
+        if (account) this.notify.accountUsage(account);
+        if (!totals) return;
+        this.stored.totals = addTotals(this.stored.totalsBase, totals);
+        this.save();
+      },
       onContext: (usage) => {
         if (!live()) return;
         this.stored.context = { ...usage, at: new Date().toISOString() };

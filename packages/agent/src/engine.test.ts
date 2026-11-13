@@ -132,3 +132,60 @@ test('Claude: /compact compacts as a turn, and context usage is measured after e
   ]);
   run.close();
 });
+
+const claudeUsage = (lines: number) => ({
+  session: { total_cost_usd: 0.25, total_duration_ms: 1000, total_api_duration_ms: 800, total_lines_added: lines, total_lines_removed: 1, model_usage: {} },
+  subscription_type: 'pro', rate_limits_available: true,
+  rate_limits: {
+    five_hour: { utilization: 64, resets_at: '2026-11-13T17:49:59Z' }, seven_day: { utilization: 21, resets_at: null },
+    seven_day_opus: null, seven_day_sonnet: null, seven_day_oauth_apps: null,
+    model_scoped: [{ display_name: 'Fable', utilization: 0, resets_at: null }],
+    extra_usage: { is_enabled: false, monthly_limit: null, used_credits: null, utilization: null, currency: null },
+  },
+  behaviors: {
+    day: { request_count: 5, session_count: 2, behaviors: [{ key: 'long_context', pct: 97, count: 4 }],
+      recommendations: [{ key: 'long_context', pct: 97, title: 'Start fresh when you switch tasks', detail: 'run /clear' }],
+      agents: [], skills: [{ name: 'chrome-browser', pct: 5 }], plugins: [], mcp_servers: [{ name: 'claude-in-chrome', pct: 6 }] },
+    week: { request_count: 50, session_count: 9, behaviors: [], recommendations: [], agents: [], skills: [], plugins: [], mcp_servers: [] },
+  },
+});
+
+test('Claude usage: plan limits and Session totals after each turn, the local scan on request', { timeout: 5_000 }, async () => {
+  const skips: boolean[] = [];
+  const runQuery = (({ prompt }) => {
+    const messages = (async function* () {
+      if (typeof prompt === 'string') return;
+      for await (const _ of prompt) yield { type: 'result', subtype: 'success', is_error: false, result: '' } as SDKMessage;
+    })();
+    return Object.assign(messages, {
+      close() { void messages.return(); },
+      async getContextUsage() { throw new Error('not needed'); },
+      async usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(o: { skipBehaviors: boolean }) {
+        skips.push(o.skipBehaviors);
+        const u = claudeUsage(12);
+        return o.skipBehaviors ? { ...u, behaviors: null } : u;
+      },
+    }) as unknown as Query;
+  }) as typeof query;
+  const engine = createClaudeEngine(runQuery);
+  let reported!: (u: unknown) => void;
+  const usage = new Promise((resolve) => { reported = resolve; });
+  const run = engine({
+    cwd: process.cwd(), permissionMode: 'ask', onItem: () => {}, onExit: () => {}, onEngineSessionId: () => {},
+    onUsage: (u) => reported(u), askPermission: async () => ({ allow: false, always: false }),
+  });
+  run.send('hi');
+  const limits = [{ name: '5-hour', percent: 64, resetsAt: '2026-11-13T17:49:59Z' }, { name: '7-day', percent: 21 }, { name: '7-day Fable', percent: 0 }];
+  assert.deepEqual(await usage, {
+    totals: { costUsd: 0.25, durationMs: 1000, apiDurationMs: 800, linesAdded: 12, linesRemoved: 1 },
+    account: { plan: 'pro', limitsApply: true, limits, extra: { enabled: false } },
+  });
+  run.close();
+  const full = await engine.usage!();
+  assert.deepEqual(skips, [true, false], 'turns skip the local scan, a refresh runs it');
+  assert.deepEqual(full.local?.day, {
+    requests: 5, sessions: 2, behaviors: [{ key: 'long_context', percent: 97 }],
+    recommendations: [{ title: 'Start fresh when you switch tasks', detail: 'run /clear', percent: 97 }],
+    sources: [{ name: 'claude-in-chrome', percent: 6 }, { name: 'chrome-browser', percent: 5 }],
+  });
+});

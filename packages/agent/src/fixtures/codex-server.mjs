@@ -24,6 +24,13 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         account: ['chatgpt', 'apiKey'].includes(scenario) ? { type: scenario } : null,
         requiresOpenaiAuth: scenario !== 'external',
       });
+    case 'account/rateLimits/read':
+      if (scenario === 'apiKey') return write({ id, error: { code: -32600, message: 'rate limits are not available for API key accounts' } });
+      return reply({ ordinaryUsageAllowed: true, rateLimitsByLimitId: null, rateLimitResetCredits: null, accountId: null, rateLimits: {
+        limitId: 'codex', limitName: null, normalModelSlug: null, individualLimit: null, spendControlReached: null, rateLimitReachedType: null, planType: 'plus',
+        primary: { usedPercent: 42, windowDurationMins: 300, resetsAt: 1800000000 },
+        secondary: { usedPercent: 7, windowDurationMins: 10080, resetsAt: null },
+        credits: { hasCredits: true, unlimited: false, balance: '12.50' } } });
     case 'model/list':
       if (scenario === 'external') return write({ id, error: { code: -32600, message: 'this provider cannot list models' } });
       return reply({ nextCursor: null, data: [

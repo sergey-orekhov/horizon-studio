@@ -22,6 +22,7 @@ import type { ItemStartedNotification } from './codex-protocol/v2/ItemStartedNot
 import type { TurnCompletedNotification } from './codex-protocol/v2/TurnCompletedNotification.ts';
 import type { ModelListParams } from './codex-protocol/v2/ModelListParams.ts';
 import type { ModelListResponse } from './codex-protocol/v2/ModelListResponse.ts';
+import type { GetAccountRateLimitsResponse } from './codex-protocol/v2/GetAccountRateLimitsResponse.ts';
 import type { ThreadCompactStartParams } from './codex-protocol/v2/ThreadCompactStartParams.ts';
 import type { ThreadCompactStartResponse } from './codex-protocol/v2/ThreadCompactStartResponse.ts';
 import type { ThreadTokenUsageUpdatedNotification } from './codex-protocol/v2/ThreadTokenUsageUpdatedNotification.ts';
@@ -36,6 +37,7 @@ type RpcMethods = {
   'turn/start': [TurnStartParams, TurnStartResponse];
   'model/list': [ModelListParams, ModelListResponse];
   'thread/compact/start': [ThreadCompactStartParams, ThreadCompactStartResponse];
+  'account/rateLimits/read': [undefined, GetAccountRateLimitsResponse];
 };
 type Message = {
   id?: RequestId;
@@ -377,6 +379,29 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
       rpc?.close();
     }
   };
+  /** Plan limits; an account without them (an API key, a custom provider) has none. */
+  engine.usage = async () => {
+    const rpc = new AppServer(launch, undefined, () => {}, () => {});
+    try {
+      await rpc.initialize();
+      const { rateLimits: snapshot } = await rpc.request('account/rateLimits/read', undefined).catch(() => ({ rateLimits: null }));
+      if (!snapshot) return { limitsApply: false, limits: [] };
+      const name = (mins: number | null) => (mins === 300 ? '5-hour' : mins === 10080 ? '7-day' : mins ? `${Math.round(mins / 60)}-hour` : 'Usage');
+      const limits = [snapshot.primary, snapshot.secondary].flatMap((w) =>
+        w ? [{ name: name(w.windowDurationMins), percent: w.usedPercent, ...(w.resetsAt ? { resetsAt: new Date(w.resetsAt * 1000).toISOString() } : {}) }] : [],
+      );
+      const credits = snapshot.credits;
+      return {
+        ...(snapshot.planType ? { plan: snapshot.planType } : {}),
+        limitsApply: true,
+        limits,
+        ...(credits ? { extra: { enabled: credits.hasCredits || credits.unlimited, ...(credits.balance ? { balance: credits.balance } : {}) } } : {}),
+      };
+    } finally {
+      rpc.close();
+    }
+  };
+
   return engine;
 }
 
