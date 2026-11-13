@@ -24,9 +24,11 @@ test('app-server does not inherit desktop launch context or mutate caller enviro
 });
 
 test('Codex status reports login method, missing credentials, and missing executable', async () => {
-  assert.deepEqual(await engineFor('chatgpt').status!(), { status: 'ready', loginMethod: 'chatgpt' });
-  assert.deepEqual(await engineFor('apiKey').status!(), { status: 'ready', loginMethod: 'apiKey' });
+  const models = [{ id: 'gpt-a', name: 'GPT A', isDefault: false }, { id: 'gpt-b', name: 'GPT B', isDefault: true }];
+  assert.deepEqual(await engineFor('chatgpt').status!(), { status: 'ready', loginMethod: 'chatgpt', models });
+  assert.deepEqual(await engineFor('apiKey').status!(), { status: 'ready', loginMethod: 'apiKey', models });
   assert.deepEqual(await engineFor('noCredentials').status!(), { status: 'no credentials' });
+  // A provider that cannot list models is still ready, just without a model choice.
   assert.deepEqual(await engineFor('external').status!(), { status: 'ready' });
   const missing = createCodexEngine(() => spawn('horizon-missing-codex-executable-12345', []));
   assert.equal(await missing.status!(), 'not installed');
@@ -167,4 +169,39 @@ test('synchronous launch errors finish the turn and signal Engine exit', async (
   assert.deepEqual(result.items, [{ kind: 'turn_end', error: 'Invalid launch configuration' }]);
   assert.equal(result.exited, true);
   result.run.close();
+});
+
+test('Codex passes the model to the thread and each turn; a change applies from the next turn', { timeout: 10_000 }, async (t) => {
+  const texts: string[] = [];
+  let next!: () => void;
+  let ended = new Promise<void>((resolve) => { next = resolve; });
+  const run = engineFor('model')({
+    cwd: process.cwd(), permissionMode: 'ask', model: 'gpt-a',
+    onExit: () => {}, onEngineSessionId: () => {}, askPermission: async () => ({ allow: false, always: false }),
+    onItem: (item) => {
+      if (item.kind === 'text') texts.push(item.text);
+      if (item.kind === 'turn_end') next();
+    },
+  });
+  t.after(() => run.close());
+  const turnWith = async (model?: string | null) => {
+    if (model !== null) await run.setModel!(model);
+    ended = new Promise<void>((resolve) => { next = resolve; });
+    run.send('test');
+    await ended;
+    return JSON.parse(texts.at(-1)!);
+  };
+  assert.deepEqual(await turnWith(null), { thread: 'gpt-a', turn: 'gpt-a' });
+  assert.deepEqual(await turnWith('gpt-c'), { thread: 'gpt-a', turn: 'gpt-c' });
+  // Back to the default: Codex keeps a thread's last model, so the default is named explicitly.
+  assert.deepEqual(await turnWith(undefined), { thread: 'gpt-a', turn: 'gpt-b' });
+});
+
+test('Codex modelNotFound ends the turn and reports the unavailable model', { timeout: 5_000 }, async (t) => {
+  let unavailable = 0;
+  const result = turn(engineFor('model-missing'), { onModelUnavailable: () => unavailable++ });
+  t.after(() => result.run.close());
+  await result.done;
+  assert.deepEqual(result.items.at(-1), { kind: 'turn_end', error: 'The model is not available' });
+  assert.equal(unavailable, 1);
 });

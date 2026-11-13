@@ -712,3 +712,77 @@ test('Shell: admin only, starts in the Task Directory, ends with its connection 
   admin.close();
   await waitUntil(() => !alive(second.pid));
 });
+
+test('Model: chosen at creation, switched mid-run, kept across a restart; an unavailable model pauses the Task', { timeout: 20_000 }, async (t) => {
+  const starts: (string | undefined)[] = [];
+  const switched: (string | undefined)[] = [];
+  const sent: string[] = [];
+  const models = [{ id: 'm1', name: 'Model 1' }, { id: 'm2', name: 'Model 2', isDefault: true }];
+  const engine: Engine = Object.assign(
+    (opts: Parameters<Engine>[0]) => {
+      starts.push(opts.model);
+      opts.onEngineSessionId('engine-model-session');
+      return {
+        send: (text: string) => {
+          sent.push(text);
+          setImmediate(() => {
+            if (text === 'unavailable') {
+              opts.onItem({ kind: 'turn_end', error: 'The model is not available' });
+              opts.onModelUnavailable?.();
+            } else (opts.onItem({ kind: 'text', text: 'ok' }), opts.onItem({ kind: 'turn_end' }));
+          });
+        },
+        close: () => {},
+        async setModel(model: string | undefined) {
+          if (model === 'bogus') throw new Error("Model 'bogus' not found");
+          switched.push(model);
+        },
+      };
+    },
+    { status: async () => ({ status: 'ready' as const, models }) },
+  );
+  const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
+  const a1 = await startAgent(home, 0, { engine });
+  const c1 = client(await connect((a1.server.address() as AddressInfo).port, a1.adminToken!));
+  assert.deepEqual((await c1.call('agent.info')).engines[0].models, models);
+  const task: Task = await c1.call('task.create', { name: 'model', model: 'm1' });
+  const sessionId = task.sessions[0].id;
+  assert.equal(task.sessions[0].model, 'm1');
+  await c1.call('session.subscribe', { sessionId, fromSeq: 0 });
+  await c1.call('session.send', { sessionId, text: 'hi' });
+  await c1.until(3);
+  assert.deepEqual(starts, ['m1']);
+
+  assert.equal(await c1.call('session.setModel', { sessionId, model: 'm2' }), null);
+  assert.equal(await c1.call('session.setModel', { sessionId, model: 'bogus' }), undefined, 'an unknown model is rejected');
+  const modelOf = async () => (await c1.call('task.list')).find((x: Task) => x.id === task.id).sessions[0].model;
+  assert.equal(await modelOf(), 'm2');
+  assert.equal(await c1.call('session.setModel', { sessionId, model: null }), null);
+  assert.equal(await modelOf(), undefined, 'null returns to the Engine default');
+  assert.equal(await c1.call('session.setModel', { sessionId, model: 'm1' }), null);
+  assert.deepEqual(switched, ['m2', undefined, 'm1'], 'the running Engine switches at once');
+  const changes = (await c1.until(6)).filter((e) => e.item.kind === 'model').map((e) => e.item);
+  assert.deepEqual(changes, [{ kind: 'model', model: 'm2' }, { kind: 'model' }, { kind: 'model', model: 'm1' }]);
+  c1.close();
+  a1.stop();
+
+  // After a restart the Session starts with its saved model.
+  const a2 = await startAgent(home, 0, { engine });
+  t.after(() => a2.stop());
+  const c2 = client(await connect((a2.server.address() as AddressInfo).port, a1.adminToken!));
+  t.after(() => c2.close());
+  await c2.call('session.subscribe', { sessionId, fromSeq: 0 });
+  await c2.call('session.send', { sessionId, text: 'unavailable' });
+  const paused = async () => (await c2.call('task.list')).find((x: Task) => x.id === task.id).state === 'paused';
+  while (!(await paused())) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(starts.at(-1), 'm1');
+  const items = (await c2.until(9)).map((e) => e.item);
+  assert.deepEqual(items.slice(-2), [{ kind: 'turn_end', error: 'The model is not available' }, { kind: 'status', status: 'paused' }]);
+
+  // After choosing another model, resuming continues the failed turn.
+  await c2.call('session.setModel', { sessionId, model: 'm2' });
+  await c2.call('task.resume', { taskId: task.id });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(starts.at(-1), 'm2');
+  assert.match(sent.at(-1)!, /^\[HorizonStudio\] The Task was resumed/);
+});

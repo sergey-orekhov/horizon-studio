@@ -20,6 +20,8 @@ import type { TurnStartResponse } from './codex-protocol/v2/TurnStartResponse.ts
 import type { ItemCompletedNotification } from './codex-protocol/v2/ItemCompletedNotification.ts';
 import type { ItemStartedNotification } from './codex-protocol/v2/ItemStartedNotification.ts';
 import type { TurnCompletedNotification } from './codex-protocol/v2/TurnCompletedNotification.ts';
+import type { ModelListParams } from './codex-protocol/v2/ModelListParams.ts';
+import type { ModelListResponse } from './codex-protocol/v2/ModelListResponse.ts';
 import type { CommandExecutionRequestApprovalResponse } from './codex-protocol/v2/CommandExecutionRequestApprovalResponse.ts';
 import type { FileChangeRequestApprovalResponse } from './codex-protocol/v2/FileChangeRequestApprovalResponse.ts';
 
@@ -29,6 +31,7 @@ type RpcMethods = {
   'thread/start': [ThreadStartParams, ThreadStartResponse];
   'thread/resume': [ThreadResumeParams, ThreadResumeResponse];
   'turn/start': [TurnStartParams, TurnStartResponse];
+  'model/list': [ModelListParams, ModelListResponse];
 };
 type Message = {
   id?: RequestId;
@@ -173,6 +176,9 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
     let threadId = opts.resume;
     let closed = false;
     let awaitingTurn = false;
+    let model = opts.model;
+    /** Back to the Engine's default after a change: Codex keeps a thread's last model, so name the default explicitly. */
+    let resetModel = false;
     let restoreInput = false;
     const approvals = new Set<RequestId>();
     const fileChanges = new Map<string, { turnId: string; changes: FileChange['changes'] }>();
@@ -245,6 +251,12 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
         if (params.turn.status === 'completed') {
           awaitingTurn = false;
           opts.onItem({ kind: 'turn_end' });
+        } else if (params.turn.error?.codexErrorInfo === 'modelNotFound' && opts.onModelUnavailable) {
+          // End the turn first: pausing the Task closes this Engine, and later events are dropped.
+          awaitingTurn = false;
+          opts.onItem({ kind: 'turn_end', error: params.turn.error.message });
+          opts.onModelUnavailable();
+          fail(new Error(params.turn.error.message));
         } else fail(new Error(params.turn.error?.message ?? params.turn.status));
       }
     };
@@ -263,6 +275,7 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
               approvalPolicy: opts.permissionMode === 'auto' ? 'never' : 'untrusted',
               approvalsReviewer: 'user',
               sandbox: opts.permissionMode === 'auto' ? 'danger-full-access' : 'workspace-write',
+              ...(model ? { model } : {}),
               ...(platform === 'win32' && opts.permissionMode === 'ask' ? { config: { 'windows.sandbox': 'unelevated' } } : {}),
             };
             let result: ThreadStartResponse | ThreadResumeResponse;
@@ -286,8 +299,12 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
           void ready.then(async (id) => {
             const input = restoreInput ? opts.initialInput ?? text : text;
             restoreInput = false;
+            if (resetModel) {
+              resetModel = false;
+              model = (await active.request('model/list', {})).data.find((m) => m.isDefault)?.model;
+            }
             if (!closed) await active.request('turn/start', {
-              threadId: id, input: [{ type: 'text', text: input, text_elements: [] }],
+              threadId: id, input: [{ type: 'text', text: input, text_elements: [] }], ...(model ? { model } : {}),
             });
           }).catch(fail);
         } catch (error) {
@@ -299,6 +316,11 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
         approvals.clear();
         fileChanges.clear();
         rpc?.close();
+      },
+      // Codex takes the model per turn, so a change applies from the next turn.
+      async setModel(next) {
+        model = next;
+        resetModel = next === undefined;
       },
     };
   };
@@ -312,10 +334,12 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
       });
       await rpc.initialize();
       const { account, requiresOpenaiAuth } = await rpc.request('account/read', { refreshToken: false });
-      return {
-        status: account || !requiresOpenaiAuth ? 'ready' : 'no credentials',
-        ...(account ? { loginMethod: account.type } : {}),
-      };
+      const status = account || !requiresOpenaiAuth ? 'ready' : 'no credentials';
+      // Some providers cannot list models; the Engine still works, just without a model choice.
+      const models = status === 'ready'
+        ? await rpc.request('model/list', {}).then((r) => r.data.map((m) => ({ id: m.model, name: m.displayName, isDefault: m.isDefault })), () => undefined)
+        : undefined;
+      return { status, ...(account ? { loginMethod: account.type } : {}), ...(models ? { models } : {}) };
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       return missing || code === 'ENOENT' || code === 'MODULE_NOT_FOUND' ? 'not installed' : 'unavailable';

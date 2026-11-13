@@ -5,6 +5,8 @@ import type { EngineAvailability, EngineStatus, PermissionMode, SessionItem } fr
 export interface EngineRun {
   send(text: string): void;
   close(): void;
+  /** Switches the model of the running Engine; `undefined` returns to the Engine's default. Rejects an unknown model. */
+  setModel?(model: string | undefined): Promise<void>;
 }
 
 export interface EngineOptions {
@@ -12,12 +14,16 @@ export interface EngineOptions {
   permissionMode: PermissionMode;
   /** Engine conversation id to continue. */
   resume?: string;
+  /** The model to use; `undefined` means the Engine's default. */
+  model?: string;
   /** Recorded user input to restore only if the saved Engine conversation has no rollout. */
   initialInput?: string;
   onItem(item: SessionItem): void;
   onEngineSessionId(id: string): void;
   /** The process has ended. Future messages must start a new Engine. */
   onExit(): void;
+  /** The model is not available for this account; called after the failed turn has ended. */
+  onModelUnavailable?(): void;
   /** Decision on a permission request; `always` means do not ask about this again in this Session. */
   askPermission(req: { tool: string; input: unknown; reason?: string }): Promise<{ allow: boolean; always: boolean }>;
 }
@@ -39,6 +45,7 @@ export function createClaudeEngine(runQuery: typeof query = query): Engine {
       options: {
         cwd: opts.cwd,
         resume: opts.resume,
+        model: opts.model,
         // The Engine asks questions as plain text at the end of a turn, and the user answers in the chat.
         disallowedTools: ['AskUserQuestion'],
         canUseTool: async (tool, input, { suggestions, decisionReason }) => {
@@ -52,10 +59,16 @@ export function createClaudeEngine(runQuery: typeof query = query): Engine {
 
     (async () => {
       try {
+        let modelUnavailable = false;
         for await (const msg of q) {
+          if (msg.type === 'assistant' && msg.error === 'model_not_found') modelUnavailable = true;
           toItems(msg, opts);
           if (msg.type === 'result') {
             awaitingTurn = false;
+            if (modelUnavailable) {
+              modelUnavailable = false;
+              opts.onModelUnavailable?.();
+            }
             if (msg.subtype !== 'success') break;
           }
         }
@@ -78,6 +91,7 @@ export function createClaudeEngine(runQuery: typeof query = query): Engine {
         inbox.end();
         q.close();
       },
+      setModel: (model) => q.setModel(model),
     };
   };
 
@@ -89,7 +103,10 @@ export function createClaudeEngine(runQuery: typeof query = query): Engine {
       const a = await q.accountInfo();
       // Third-party providers (Bedrock, Vertex…) authenticate outside Claude Code, so they count as ready.
       const firstParty = (a.apiProvider ?? 'firstParty') === 'firstParty';
-      return firstParty && a.tokenSource === 'none' && !a.apiKeySource ? 'no credentials' : 'ready';
+      if (firstParty && a.tokenSource === 'none' && !a.apiKeySource) return 'no credentials';
+      // `default` is Claude Code's own name for "no model chosen", which Studio offers separately.
+      const models = (await q.supportedModels()).filter((m) => m.value !== 'default').map((m) => ({ id: m.value, name: m.displayName }));
+      return { status: 'ready', models };
     } catch {
       return 'not installed';
     } finally {
@@ -109,6 +126,7 @@ function toItems(msg: SDKMessage, opts: EngineOptions) {
       return;
     case 'assistant':
       if (msg.parent_tool_use_id) return; // subagent events are not shown yet
+      if (msg.error) return; // a synthetic message; the turn ends with the error
       for (const b of msg.message.content) {
         if (b.type === 'text') opts.onItem({ kind: 'text', text: b.text });
         else if (b.type === 'tool_use') opts.onItem({ kind: 'tool', id: b.id, name: b.name, input: b.input });
@@ -127,7 +145,8 @@ function toItems(msg: SDKMessage, opts: EngineOptions) {
       return;
     }
     case 'result':
-      opts.onItem(msg.subtype === 'success' ? { kind: 'turn_end' } : { kind: 'turn_end', error: msg.subtype });
+      if (msg.subtype !== 'success') opts.onItem({ kind: 'turn_end', error: msg.subtype });
+      else opts.onItem(msg.is_error ? { kind: 'turn_end', error: msg.result } : { kind: 'turn_end' });
       return;
   }
 }
