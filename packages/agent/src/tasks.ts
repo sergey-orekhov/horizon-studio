@@ -103,6 +103,22 @@ export class Tasks {
     return true;
   }
 
+  /**
+   * Switches `auto` Tasks whose owner may not use `auto` to `ask`, and records it in their Sessions.
+   * Runs before `recover`, so no Engine starts with the old mode. Returns the ids of changed Tasks.
+   */
+  restrictAuto(allowed: (ownerId: string) => boolean): string[] {
+    const changed: string[] = [];
+    for (const task of this.tasks.values()) {
+      if (task.permissionMode !== 'auto' || allowed(task.ownerId)) continue;
+      task.permissionMode = 'ask';
+      this.save(task);
+      for (const s of task.sessions) this.load(task, s.id).autoDisabled();
+      changed.push(task.id);
+    }
+    return changed;
+  }
+
   /** After an Agent restart, continues Sessions of active Tasks that were interrupted mid-turn. */
   recover() {
     for (const task of this.tasks.values()) {
@@ -247,6 +263,10 @@ export class Session {
 
   reopened() {
     this.append({ kind: 'status', status: 'reopened' });
+  }
+
+  autoDisabled() {
+    this.append({ kind: 'status', status: 'auto_disabled' });
   }
 
   resume() {

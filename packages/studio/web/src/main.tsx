@@ -65,6 +65,10 @@ function App() {
     .flatMap((agent) => (tasks[agent.id] ?? []).map((task) => ({ agent, task })))
     .sort((a, b) => completedLast(a.task, b.task) || a.task.createdAt.localeCompare(b.task.createdAt));
   const readyAgents = onlineAgents.filter((a) => a.hello?.engines.some((e) => e.status === 'ready'));
+  const [newTaskAgent, setNewTaskAgent] = useState<string>();
+  // An Agent without `permissionModes` predates the auto restriction (#41) and accepts auto from anyone.
+  const newTaskHello = (readyAgents.find((a) => a.id === newTaskAgent) ?? readyAgents[0])?.hello;
+  const newTaskAuto = newTaskHello?.permissionModes?.includes('auto') ?? true;
 
   // Subscribe to the selected Task's Session; after an Agent reconnect, subscribe again from the last seq.
   const sessionId = task?.sessions[0].id;
@@ -90,8 +94,11 @@ function App() {
   }
 
   // Task state comes from Session events, so all Studios see it at once.
-  const status = sessionId ? events[sessionId]?.findLast((e) => e.item.kind === 'status')?.item : undefined;
-  const state: TaskState | undefined = status?.kind === 'status' ? statusToState[status.status] : task?.state;
+  const status = sessionId
+    ? events[sessionId]?.findLast((e) => e.item.kind === 'status' && e.item.status in statusToState)?.item
+    : undefined;
+  const state: TaskState | undefined =
+    status?.kind === 'status' ? statusToState[status.status as keyof typeof statusToState] : task?.state;
   const [confirmDelete, setConfirmDelete] = useState(false);
   useEffect(() => setConfirmDelete(false), [selected?.taskId, state]);
 
@@ -154,7 +161,7 @@ function App() {
               <button>+</button>
             </div>
             {readyAgents.length > 1 && (
-              <select name="agentId" aria-label="Agent">
+              <select name="agentId" aria-label="Agent" onChange={(e) => setNewTaskAgent(e.target.value)}>
                 {readyAgents.map((a) => (
                   <option key={a.id} value={a.id}>
                     on {a.name}
@@ -165,7 +172,7 @@ function App() {
             <select name="permissionMode" aria-label="Permission Mode" defaultValue="">
               <option value="">Permissions: Agent default</option>
               <option value="ask">Ask for permission</option>
-              <option value="auto">Allow everything without asking</option>
+              {newTaskAuto && <option value="auto">Allow everything without asking</option>}
             </select>
           </form>
         )}

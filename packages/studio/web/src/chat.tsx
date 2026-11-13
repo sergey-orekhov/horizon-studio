@@ -144,6 +144,7 @@ const statusLabel = {
   completed: 'Completed',
   reopened: 'Reopened',
   interrupted: 'Agent restarted. Continuing from where it stopped',
+  auto_disabled: 'Permission Mode changed to ask, because only an admin can use auto on this Agent',
 };
 
 function summary(input: unknown): string {

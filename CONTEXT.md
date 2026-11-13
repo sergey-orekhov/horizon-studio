@@ -57,7 +57,7 @@ The state of a Task whose Sessions have all stopped, with its Task Directory and
 _Avoid_: archived, closed, done
 
 **Permission Mode**:
-A Task setting that decides how Sessions handle the Engine's permission requests: `ask` (each request puts the Session in Waiting; the default) or `auto` (everything is allowed without asking). An Agent's admin sets the default in its config.
+A Task setting that decides how Sessions handle the Engine's permission requests: `ask` (each request puts the Session in Waiting; the default) or `auto` (everything is allowed without asking). An Agent's admin sets the default in its config. Only an admin can use `auto`, unless the Agent config allows it for `user` Members.
 _Avoid_: safety mode, autonomy level
 
 **Task Directory**:
