@@ -21,6 +21,8 @@ export interface AgentOptions {
   engine?: Engine;
   /** Permission Mode for new Tasks when none is given (from the Agent config). */
   defaultPermissionMode?: PermissionMode;
+  /** Lets `user` Members use Permission Mode `auto`, which gives the Engine full access to the machine (from the Agent config). */
+  allowUserAuto?: boolean;
   /** How many days until a completed Task is permanently deleted. */
   completedRetentionDays?: number;
   /** Id of the build the Launcher started this Agent from. */
@@ -36,6 +38,12 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
   const members = new Members(home);
   const engine = opts.engine ?? claudeCode;
   const tasks = new Tasks(home, engine, opts.completedRetentionDays ?? 30);
+  const allowUserAuto = !!opts.allowUserAuto;
+  if (!allowUserAuto) {
+    const admins = new Set(members.list().filter((m) => m.accessLevel === 'admin').map((m) => m.id));
+    for (const id of tasks.restrictAuto((ownerId) => admins.has(ownerId)))
+      console.log(`Task ${id}: Permission Mode changed from auto to ask, because its owner is not an admin and allowUserAuto is off`);
+  }
   tasks.purge();
   tasks.recover();
   setInterval(() => tasks.purge(), 60 * 60 * 1000).unref();
@@ -108,7 +116,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
           ws.close(1003, 'invalid JSON');
           return;
         }
-        handle(req, { info, member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode })
+        handle(req, { info, member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode, allowUserAuto })
           .catch((e): Response => ({ type: 'response', id: req.id, error: { message: e instanceof Error ? e.message : String(e) } }))
           .then((res) => ws.send(JSON.stringify(res)));
       });
@@ -133,17 +141,19 @@ interface Context {
   ws: WebSocket;
   subscriptions: Map<string, () => void>;
   defaultPermissionMode: PermissionMode;
+  allowUserAuto: boolean;
 }
 
 const permissionModes: PermissionMode[] = ['ask', 'auto'];
 const accessLevels: AccessLevel[] = ['admin', 'user'];
 
-async function handle(req: Request, { info, member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode }: Context): Promise<Response> {
+async function handle(req: Request, { info, member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode, allowUserAuto }: Context): Promise<Response> {
   const ok = (result: unknown): Response => ({ type: 'response', id: req.id, result });
   const fail = (message: string): Response => ({ type: 'response', id: req.id, error: { message } });
   const p = (req.params ?? {}) as Record<string, any>;
 
   if (req.method.startsWith('member.') && member.accessLevel !== 'admin') return fail('only admin can manage Members');
+  const canUseAuto = member.accessLevel === 'admin' || allowUserAuto;
   switch (req.method) {
     case 'member.list':
       return ok(members.list());
@@ -167,13 +177,16 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
         ...info(),
         member: { id: member.id, name: member.name, accessLevel: member.accessLevel, tokenId },
         engines: [{ id: 'claude-code', status: (await engine.status?.()) ?? 'ready' }],
+        permissionModes: canUseAuto ? ['ask', 'auto'] : ['ask'],
       };
       return ok(result);
     }
     case 'task.create':
       if (typeof p.name !== 'string' || !p.name.trim()) return fail('name is required');
       if (p.permissionMode !== undefined && !permissionModes.includes(p.permissionMode)) return fail('invalid permissionMode');
-      return ok(tasks.create(p.name.trim(), member, p.permissionMode ?? defaultPermissionMode));
+      if (p.permissionMode === 'auto' && !canUseAuto)
+        return fail('Only an admin can create a Task with Permission Mode auto. Choose ask, or ask an admin to set allowUserAuto in the Agent config.');
+      return ok(tasks.create(p.name.trim(), member, p.permissionMode ?? (canUseAuto ? defaultPermissionMode : 'ask')));
     case 'task.list':
       return ok(tasks.list(member));
     case 'task.pause':

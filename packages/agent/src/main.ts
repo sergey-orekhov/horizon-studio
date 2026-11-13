@@ -12,7 +12,7 @@ const home = resolve(values.home ?? join(homedir(), '.horizon-agent'));
 mkdirSync(home, { recursive: true });
 
 const configFile = join(home, 'config.json');
-const config: { port?: number; defaultPermissionMode?: PermissionMode; completedRetentionDays?: number } = existsSync(configFile)
+const config: { port?: number; defaultPermissionMode?: PermissionMode; allowUserAuto?: boolean; completedRetentionDays?: number } = existsSync(configFile)
   ? JSON.parse(readFileSync(configFile, 'utf8'))
   : {};
 const port = config.port ?? 7400;
@@ -23,6 +23,7 @@ const build = launcher ? basename(dirname(fileURLToPath(import.meta.url))) : und
 
 const { adminToken, stop } = await startAgent(home, port, {
   defaultPermissionMode: config.defaultPermissionMode,
+  allowUserAuto: config.allowUserAuto,
   completedRetentionDays: config.completedRetentionDays,
   build,
   restart: launcher

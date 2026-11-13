@@ -23,6 +23,8 @@ export interface AgentHello extends AgentInfo {
   member: { id: string; name: string; accessLevel: AccessLevel; tokenId: string };
   /** This Agent's Engines and whether they are ready on its machine. */
   engines: { id: EngineId; status: EngineStatus }[];
+  /** Permission Modes this Member may choose for a new Task. */
+  permissionModes: PermissionMode[];
 }
 
 /** A Member without secrets, for management from Studio (admin only). */
@@ -82,7 +84,7 @@ export type SessionItem =
   | { kind: 'permission_answer'; requestId: string; allow: boolean; always: boolean }
   | { kind: 'turn_end'; error?: string }
   /** `interrupted`: the Agent restarted mid-turn and continues the Session on its own. */
-  | { kind: 'status'; status: 'paused' | 'resumed' | 'completed' | 'reopened' | 'interrupted' }
+  | { kind: 'status'; status: 'paused' | 'resumed' | 'completed' | 'reopened' | 'interrupted' | 'auto_disabled' }
   | { kind: 'error'; message: string };
 
 /**

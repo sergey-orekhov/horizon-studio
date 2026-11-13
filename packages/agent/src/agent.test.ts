@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -359,4 +359,41 @@ test('Agent Update: PUT /update installs the build and asks the Launcher to rest
   });
   assert.equal(r.status, 409, 'updating is not possible without the Launcher');
   plain.stop();
+});
+
+test('Permission Mode auto: admin only unless allowUserAuto; user auto Tasks switch to ask at startup', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
+  const a1 = await startAgent(home, 0, { engine: echo, defaultPermissionMode: 'auto' });
+  const port1 = (a1.server.address() as AddressInfo).port;
+  const admin1 = client(await connect(port1, a1.adminToken!));
+  const { token: bobToken } = await admin1.call('member.create', { name: 'bob', accessLevel: 'user' });
+  const bob1 = client(await connect(port1, bobToken));
+
+  assert.equal((await admin1.call('agent.info')).permissionModes.join(), 'ask,auto');
+  assert.equal((await bob1.call('agent.info')).permissionModes.join(), 'ask');
+  assert.equal((await admin1.call('task.create', { name: 'admin auto', permissionMode: 'auto' })).permissionMode, 'auto');
+  assert.equal(await bob1.call('task.create', { name: 'bob auto', permissionMode: 'auto' }), undefined, 'a user cannot choose auto');
+  assert.equal((await bob1.call('task.create', { name: 'bob default' })).permissionMode, 'ask', 'the auto default does not apply to a user');
+  admin1.close();
+  bob1.close();
+  a1.stop();
+
+  // With allowUserAuto, a user can create an auto Task.
+  const a2 = await startAgent(home, 0, { engine: echo, allowUserAuto: true });
+  const bob2 = client(await connect((a2.server.address() as AddressInfo).port, bobToken));
+  assert.equal((await bob2.call('agent.info')).permissionModes.join(), 'ask,auto');
+  const bobAuto: Task = await bob2.call('task.create', { name: 'bob auto', permissionMode: 'auto' });
+  assert.equal(bobAuto.permissionMode, 'auto');
+  bob2.close();
+  a2.stop();
+
+  // Without it again, the user's auto Task switches to ask at startup and its Session records why; the admin's stays auto.
+  const a3 = await startAgent(home, 0, { engine: echo });
+  const stored = (id: string) => JSON.parse(readFileSync(join(home, 'tasks', id, 'task.json'), 'utf8'));
+  assert.equal(stored(bobAuto.id).permissionMode, 'ask');
+  const log = readFileSync(join(home, 'tasks', bobAuto.id, 'sessions', `${bobAuto.sessions[0].id}.jsonl`), 'utf8');
+  assert.match(log, /"status":"auto_disabled"/);
+  const adminAuto = readdirSync(join(home, 'tasks')).map(stored).find((t) => t.name === 'admin auto');
+  assert.equal(adminAuto.permissionMode, 'auto');
+  a3.stop();
 });
