@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { AgentsEvent, ConnectionInput, Response, StudioRequest } from '@horizon/protocol';
+import type { AgentsEvent, ConnectionInput, Response, StudioRequest, StudioShellEvent } from '@horizon/protocol';
 import { AgentLink, type Connection } from './agent-link.ts';
 
 // From both src/ and dist/, this points to dist/web.
@@ -37,15 +37,49 @@ export function startStudio(configFile: string, port: number): Promise<Server> {
   // ponytail: events of all Sessions go to all browsers, and the browser filters by sessionId and seq.
   // Add targeted delivery when there are many browsers (a shared Studio).
   const knownHosts = join(dirname(configFile), 'known_hosts');
-  const link = (c: Connection) =>
-    links.set(c.id, new AgentLink(c, knownHosts, broadcast, (e) => send({ ...e, agentId: c.id })));
+  /** Each shell console belongs to the browser that opened it: only it gets the output and may control it. */
+  const shellOwners = new Map<string, { agentId: string; shellId: string; ws: WebSocket }>();
+  const endShells = (match: (s: { agentId: string; ws: WebSocket }) => boolean, reason: string) => {
+    for (const [key, s] of shellOwners)
+      if (match(s)) {
+        shellOwners.delete(key);
+        s.ws.send(JSON.stringify({ type: 'shell', agentId: s.agentId, shellId: s.shellId, exit: { code: -1, reason } } satisfies StudioShellEvent));
+      }
+  };
+  const link = (c: Connection) => {
+    const agent: AgentLink = new AgentLink(
+      c,
+      knownHosts,
+      () => {
+        broadcast();
+        // The Agent closes a connection's shells when the connection drops.
+        if (agent?.status.state !== 'online') endShells((s) => s.agentId === c.id, 'The connection to the Agent was lost.');
+      },
+      (e) => {
+        if (e.type !== 'shell') return send({ ...e, agentId: c.id });
+        const key = `${c.id}:${e.shellId}`;
+        const owner = shellOwners.get(key);
+        if (e.exit) shellOwners.delete(key);
+        owner?.ws.send(JSON.stringify({ ...e, agentId: c.id } satisfies StudioShellEvent));
+      },
+    );
+    links.set(c.id, agent);
+  };
   config.connections.forEach(link);
 
-  async function handle(req: StudioRequest): Promise<Response> {
+  async function handle(req: StudioRequest, ws: WebSocket): Promise<Response> {
     if (req.agentId) {
       const agent = links.get(req.agentId);
       if (!agent) return { type: 'response', id: req.id, error: { message: 'unknown agent' } };
-      return { ...(await agent.request(req.method, req.params)), id: req.id };
+      const shellId = (req.params as { shellId?: string } | undefined)?.shellId;
+      if (req.method.startsWith('shell.') && req.method !== 'shell.open' && shellOwners.get(`${req.agentId}:${shellId}`)?.ws !== ws)
+        return { type: 'response', id: req.id, error: { message: 'unknown shell' } };
+      const res = await agent.request(req.method, req.params);
+      if (req.method === 'shell.open' && 'result' in res) {
+        const opened = (res.result as { shellId: string }).shellId;
+        shellOwners.set(`${req.agentId}:${opened}`, { agentId: req.agentId, shellId: opened, ws });
+      }
+      return { ...res, id: req.id };
     }
     switch (req.method) {
       case 'connection.add': {
@@ -75,6 +109,7 @@ export function startStudio(configFile: string, port: number): Promise<Server> {
         save();
         links.get(id)?.close();
         links.delete(id);
+        endShells((s) => s.agentId === id, 'The Connection was removed.');
         broadcast();
         return { type: 'response', id: req.id, result: null };
       }
@@ -98,7 +133,14 @@ export function startStudio(configFile: string, port: number): Promise<Server> {
   const wss = new WebSocketServer({ server, path: '/ws' });
   wss.on('connection', (ws) => {
     clients.add(ws);
-    ws.on('close', () => clients.delete(ws));
+    ws.on('close', () => {
+      clients.delete(ws);
+      for (const [key, s] of shellOwners)
+        if (s.ws === ws) {
+          shellOwners.delete(key);
+          void links.get(s.agentId)?.request('shell.close', { shellId: s.shellId });
+        }
+    });
     ws.send(JSON.stringify(agentsEvent()));
     ws.on('message', async (data) => {
       let req: StudioRequest;
@@ -108,7 +150,7 @@ export function startStudio(configFile: string, port: number): Promise<Server> {
         ws.close(1003, 'invalid JSON');
         return;
       }
-      ws.send(JSON.stringify(await handle(req)));
+      ws.send(JSON.stringify(await handle(req, ws)));
     });
   });
   server.on('close', () => links.forEach((l) => l.close()));

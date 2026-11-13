@@ -13,7 +13,7 @@ import type { UpdateResult } from '@horizon/protocol';
 //   update.json    — the result of the last update
 
 export interface AgentBuild {
-  package: { version: string; dependencies?: Record<string, string> };
+  package: { version: string; dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> };
   agent: string;
 }
 
@@ -36,10 +36,12 @@ export async function installVersion(home: string, build: AgentBuild): Promise<s
   if (existsSync(join(dir, 'node_modules'))) return id;
 
   const dependencies = build.package.dependencies ?? {};
-  const deps = join(home, 'deps', sha(JSON.stringify(dependencies)).slice(0, 12));
+  // Optional dependencies may fail to install (node-pty compiles on Linux) without failing the update.
+  const optionalDependencies = build.package.optionalDependencies;
+  const deps = join(home, 'deps', sha(JSON.stringify(optionalDependencies ? { dependencies, optionalDependencies } : dependencies)).slice(0, 12));
   if (!existsSync(join(deps, 'node_modules'))) {
     mkdirSync(deps, { recursive: true });
-    writeFileSync(join(deps, 'package.json'), JSON.stringify({ private: true, dependencies }, null, 2));
+    writeFileSync(join(deps, 'package.json'), JSON.stringify({ private: true, dependencies, optionalDependencies }, null, 2));
     await promisify(execFile)('npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], {
       cwd: deps,
       shell: process.platform === 'win32',

@@ -1,5 +1,5 @@
 import WebSocket from 'ws';
-import type { AgentHello, AgentStatus, ConnectionInput, Response, SessionEvent, TasksEvent } from '@horizon/protocol';
+import type { AgentHello, AgentStatus, ConnectionInput, Response, SessionEvent, ShellEvent, TasksEvent } from '@horizon/protocol';
 import { openTunnel, type Tunnel } from './tunnel.ts';
 
 export interface Connection extends ConnectionInput {
@@ -21,13 +21,13 @@ export class AgentLink {
   private closed = false;
   readonly connection: Connection;
   private onChange: () => void;
-  private onEvent: (e: SessionEvent | TasksEvent) => void;
+  private onEvent: (e: SessionEvent | TasksEvent | ShellEvent) => void;
   private knownHosts: string;
   private tunnel?: Tunnel;
   /** The local port the Agent is reachable on now (its own or the tunnel). */
   private port = 0;
 
-  constructor(connection: Connection, knownHosts: string, onChange: () => void, onEvent: (e: SessionEvent | TasksEvent) => void) {
+  constructor(connection: Connection, knownHosts: string, onChange: () => void, onEvent: (e: SessionEvent | TasksEvent | ShellEvent) => void) {
     this.connection = connection;
     this.knownHosts = knownHosts;
     this.onChange = onChange;
@@ -101,7 +101,7 @@ export class AgentLink {
       this.refresh = setInterval(hello, REFRESH_MS);
     });
     ws.on('message', (data) => {
-      const msg = JSON.parse(String(data)) as Response | SessionEvent | TasksEvent;
+      const msg = JSON.parse(String(data)) as Response | SessionEvent | TasksEvent | ShellEvent;
       if (msg.type !== 'response') return this.onEvent(msg);
       this.pending.get(msg.id)?.(msg);
       this.pending.delete(msg.id);

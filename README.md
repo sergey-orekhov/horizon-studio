@@ -73,6 +73,14 @@ Open http://127.0.0.1:7300 and add a Connection: a name, the Agent port (7400) a
 
 Studio is started by hand (a terminal, tmux, your own service). It cannot be installed as a service yet.
 
+### Shell console
+
+An admin can open a shell in a Task's Task Directory with the Shell button next to the Task. It is a real terminal: editors, colours and Ctrl+C work. The shell runs as the Agent's OS user, like the Engines, and can reach the whole machine, so only admins can use it. It uses the user's login shell on macOS and Linux, and `powershell.exe` on Windows.
+
+The shell lives as long as its panel. Closing the panel or the window, switching to another Task, losing the connection, completing the Task or stopping the Agent ends it, along with whatever runs in it. For long-running commands, use `nohup`, `tmux` or a Session. Shell input and output are not saved anywhere.
+
+The console uses the optional dependency `node-pty`. It ships ready-made builds for macOS and Windows. On Linux, it is compiled when the Agent is installed or updated, which needs `python3`, `make` and a C++ compiler (for example, `sudo apt install python3 make g++`). If it cannot be installed, the Agent still works, and the Shell button is disabled. After installing the build tools, `node-pty` is installed by the next Agent Update with a new build. An Agent updated to this version from an earlier one also gets `node-pty` only with the next new build, because the earlier version installs the update and does not know about optional dependencies.
+
 ## Development
 
 Requires Node.js 22.18+.

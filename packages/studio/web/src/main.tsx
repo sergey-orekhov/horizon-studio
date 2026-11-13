@@ -4,6 +4,7 @@ import type { AgentStatus, EngineId, EngineStatus, PermissionMode, Task, TaskSta
 import { useStudio } from './studio.ts';
 import { Chat } from './chat.tsx';
 import { Members } from './members.tsx';
+import { Shell } from './shell.tsx';
 import './style.css';
 
 const modeLabel: Record<PermissionMode, string> = {
@@ -33,7 +34,9 @@ const loginLabel: Record<string, string> = { chatgpt: 'ChatGPT', apiKey: 'API ke
 const completedLast = (a: Task, b: Task) => Number(a.state === 'completed') - Number(b.state === 'completed');
 
 function App() {
-  const { agents, connected, tasks, setTasks, events, request } = useStudio();
+  const { agents, connected, tasks, setTasks, events, request, onShell } = useStudio();
+  /** The Task whose shell panel is open, as `agentId taskId`. */
+  const [shellFor, setShellFor] = useState<string>();
   const [selected, setSelected] = useState<{ agentId: string; taskId: string }>();
   const task = selected && tasks[selected.agentId]?.find((t) => t.id === selected.taskId);
   /** The Agent whose Members are open in the main panel instead of a Task. */
@@ -83,6 +86,8 @@ function App() {
 
   // Subscribe to the selected Task's Session; after an Agent reconnect, subscribe again from the last seq.
   const sessionId = task?.sessions[0].id;
+  const selectedHello = agents.find((a) => a.id === selected?.agentId)?.hello;
+  const shellKey = selected && `${selected.agentId} ${selected.taskId}`;
   const agentOnline = !!selected && online.split(',').includes(selected.agentId);
   useEffect(() => {
     if (!selected || !sessionId || !agentOnline) return;
@@ -288,6 +293,15 @@ function App() {
                   {state === 'paused' && <button onClick={() => act('resume')}>Resume</button>}
                   {state !== 'completed' && <button onClick={() => act('complete')}>Complete</button>}
                   {state === 'completed' && <button onClick={() => act('reopen')}>Reopen</button>}
+                  {selectedHello?.member.accessLevel === 'admin' && state !== 'completed' && (
+                    <button
+                      disabled={!selectedHello.shell}
+                      title={selectedHello.shell ? 'Open a shell in the Task Directory' : 'The shell console is unavailable on this Agent: node-pty could not be loaded'}
+                      onClick={() => setShellFor(shellKey)}
+                    >
+                      Shell
+                    </button>
+                  )}
                   {state === 'completed' &&
                     (confirmDelete ? (
                       <button className="danger" onClick={() => act('delete')}>
@@ -321,6 +335,9 @@ function App() {
                 request('session.answer', { sessionId, requestId, allow, always }, selected.agentId)
               }
             />
+            {shellFor === shellKey && agentOnline && (
+              <Shell agentId={selected.agentId} taskId={task.id} request={request} onShell={onShell} onClose={() => setShellFor(undefined)} />
+            )}
           </>
         ) : (
           <p className="muted">Select or create a Task.</p>

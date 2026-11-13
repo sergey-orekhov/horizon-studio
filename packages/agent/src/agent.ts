@@ -9,6 +9,7 @@ import { claudeCode, type Engine } from './engine.ts';
 import { Members, type Member } from './members.ts';
 import { codexForAgent } from './codex.ts';
 import { Tasks } from './tasks.ts';
+import { loadPty, Shells } from './shell.ts';
 
 export interface StartedAgent {
   server: Server;
@@ -41,6 +42,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
   const engines = new Map<EngineId, Engine>([['claude-code', opts.engine ?? claudeCode]]);
   if (!opts.engine || opts.codexEngine) engines.set('codex', opts.codexEngine ?? codexForAgent(home));
   const tasks = new Tasks(home, engines, opts.completedRetentionDays ?? 30);
+  const shells = new Shells();
   const allowUserAuto = !!opts.allowUserAuto;
   if (!allowUserAuto) {
     const admins = new Set(members.list().filter((m) => m.accessLevel === 'admin').map((m) => m.id));
@@ -110,6 +112,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
       ws.on('close', () => {
         sockets.delete(ws);
         subscriptions.forEach((unsubscribe) => unsubscribe());
+        shells.close((s) => s.owner === ws);
       });
       ws.on('message', (data) => {
         let req: Request;
@@ -119,7 +122,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
           ws.close(1003, 'invalid JSON');
           return;
         }
-        handle(req, { info, member, tokenId, members, sockets, engines, tasks, ws, subscriptions, defaultPermissionMode, allowUserAuto })
+        handle(req, { info, member, tokenId, members, sockets, engines, tasks, shells, ws, subscriptions, defaultPermissionMode, allowUserAuto })
           .catch((e): Response => ({ type: 'response', id: req.id, error: { message: e instanceof Error ? e.message : String(e) } }))
           .then((res) => ws.send(JSON.stringify(res)));
       });
@@ -127,6 +130,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
   });
 
   const stop = () => {
+    shells.close(() => true);
     tasks.shutdown();
     server.close();
   };
@@ -141,6 +145,7 @@ interface Context {
   sockets: Map<WebSocket, { member: Member; tokenId: string }>;
   engines: Map<EngineId, Engine>;
   tasks: Tasks;
+  shells: Shells;
   ws: WebSocket;
   subscriptions: Map<string, () => void>;
   defaultPermissionMode: PermissionMode;
@@ -148,6 +153,8 @@ interface Context {
 }
 
 const permissionModes: PermissionMode[] = ['ask', 'auto'];
+const validSize = (cols: unknown, rows: unknown) =>
+  [cols, rows].every((n) => Number.isInteger(n) && (n as number) > 0 && (n as number) <= 1000);
 const accessLevels: AccessLevel[] = ['admin', 'user'];
 
 async function availability(engine: Engine): Promise<EngineAvailability> {
@@ -155,12 +162,13 @@ async function availability(engine: Engine): Promise<EngineAvailability> {
   return typeof result === 'string' ? { status: result } : result;
 }
 
-async function handle(req: Request, { info, member, tokenId, members, sockets, engines, tasks, ws, subscriptions, defaultPermissionMode, allowUserAuto }: Context): Promise<Response> {
+async function handle(req: Request, { info, member, tokenId, members, sockets, engines, tasks, shells, ws, subscriptions, defaultPermissionMode, allowUserAuto }: Context): Promise<Response> {
   const ok = (result: unknown): Response => ({ type: 'response', id: req.id, result });
   const fail = (message: string): Response => ({ type: 'response', id: req.id, error: { message } });
   const p = (req.params ?? {}) as Record<string, any>;
 
   if (req.method.startsWith('member.') && member.accessLevel !== 'admin') return fail('only admin can manage Members');
+  if (req.method.startsWith('shell.') && member.accessLevel !== 'admin') return fail('Only an admin can use the shell console.');
   const canUseAuto = member.accessLevel === 'admin' || allowUserAuto;
   switch (req.method) {
     case 'member.list':
@@ -186,6 +194,7 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
         member: { id: member.id, name: member.name, accessLevel: member.accessLevel, tokenId },
         engines: await Promise.all([...engines].map(async ([id, engine]) => ({ id, ...await availability(engine) }))),
         permissionModes: canUseAuto ? ['ask', 'auto'] : ['ask'],
+        shell: !!(await loadPty()),
       };
       return ok(result);
     }
@@ -213,10 +222,34 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
     case 'task.reopen': {
       const action = req.method.slice('task.'.length) as 'pause' | 'resume' | 'complete' | 'reopen';
       const task = tasks[action](p.taskId, member);
+      if (action === 'complete' && typeof task !== 'string') shells.close((s) => s.taskId === p.taskId);
       return typeof task === 'string' ? fail(task) : ok(task);
     }
     case 'task.delete':
+      // A completed Task has no shells, since completing it closed them.
       return tasks.delete(p.taskId, member) ? ok(null) : fail('only a completed Task you can see can be deleted');
+    case 'shell.open': {
+      const dir = tasks.directory(p.taskId, member);
+      if (!dir) return fail('unknown task');
+      if (dir.state === 'completed') return fail('A completed Task has no shell console. Reopen the Task first.');
+      if (!validSize(p.cols, p.rows)) return fail('invalid terminal size');
+      const shellId = await shells.open(ws, p.taskId, dir.cwd, p.cols, p.rows, (e) => ws.send(JSON.stringify(e)));
+      return ok({ shellId });
+    }
+    case 'shell.input':
+    case 'shell.resize':
+    case 'shell.close': {
+      const shell = shells.get(ws, p.shellId);
+      if (!shell) return fail('unknown shell');
+      if (req.method === 'shell.input') {
+        if (typeof p.data !== 'string') return fail('data is required');
+        shell.write(p.data);
+      } else if (req.method === 'shell.resize') {
+        if (!validSize(p.cols, p.rows)) return fail('invalid terminal size');
+        shell.resize(p.cols, p.rows);
+      } else shells.close((s) => s.pty === shell);
+      return ok(null);
+    }
     case 'session.send': {
       const session = tasks.session(p.sessionId, member);
       if (!session) return fail('unknown session');

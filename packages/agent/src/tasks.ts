@@ -82,6 +82,13 @@ export class Tasks {
     return this.load(task, sessionId);
   }
 
+  /** The Task Directory and state of a Task, if the Member can see it. */
+  directory(taskId: string, member: Member): { cwd: string; state: TaskState } | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task || !canSee(member, task)) return;
+    return { cwd: join(this.dir, task.id, 'workspace'), state: task.state ?? 'active' };
+  }
+
   /** Pause: all Sessions of the Task stop cleanly; Engine conversation ids are kept. */
   pause(taskId: string, member: Member) {
     return this.transition(taskId, member, 'active', 'paused', (s) => s.stop('paused'));
