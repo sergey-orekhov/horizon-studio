@@ -22,7 +22,7 @@ export interface AgentHello extends AgentInfo {
   /** `tokenId` is the token this connection was opened with. */
   member: { id: string; name: string; accessLevel: AccessLevel; tokenId: string };
   /** This Agent's Engines and whether they are ready on its machine. */
-  engines: { id: EngineId; status: EngineStatus }[];
+  engines: ({ id: EngineId } & EngineAvailability)[];
   /** Permission Modes this Member may choose for a new Task. */
   permissionModes: PermissionMode[];
 }
@@ -48,8 +48,12 @@ export type Response =
 
 // --- Task and Session ---
 
-export type EngineId = 'claude-code';
-export type EngineStatus = 'ready' | 'not installed' | 'no credentials';
+export type EngineId = 'claude-code' | 'codex';
+export type EngineStatus = 'ready' | 'not installed' | 'no credentials' | 'unavailable';
+export interface EngineAvailability {
+  status: EngineStatus;
+  loginMethod?: string;
+}
 
 /** `ask`: every permission request waits for the user (Session in Waiting). `auto`: everything is allowed. */
 export type PermissionMode = 'ask' | 'auto';
@@ -78,6 +82,7 @@ export interface Task {
 export type SessionItem =
   | { kind: 'user'; text: string }
   | { kind: 'text'; text: string }
+  /** Compatibility with logs written by the initial Codex preview. New turns use completed text items. */
   | { kind: 'tool'; id: string; name: string; input: unknown }
   | { kind: 'tool_result'; id: string; output: string; isError: boolean }
   | { kind: 'permission'; requestId: string; tool: string; input: unknown; reason?: string }

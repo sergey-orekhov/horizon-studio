@@ -2,11 +2,12 @@ import { writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { join } from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { AccessLevel, AgentHello, TasksEvent, AgentInfo, PermissionMode, Request, Response } from '@horizon/protocol';
+import type { AccessLevel, AgentHello, TasksEvent, AgentInfo, EngineAvailability, EngineId, PermissionMode, Request, Response } from '@horizon/protocol';
 import { currentVersion, installVersion, lastUpdate, type AgentBuild } from '@horizon/launcher/versions';
 import pkg from '../package.json' with { type: 'json' };
 import { claudeCode, type Engine } from './engine.ts';
 import { Members, type Member } from './members.ts';
+import { codexForAgent } from './codex.ts';
 import { Tasks } from './tasks.ts';
 
 export interface StartedAgent {
@@ -19,6 +20,7 @@ export interface StartedAgent {
 
 export interface AgentOptions {
   engine?: Engine;
+  codexEngine?: Engine;
   /** Permission Mode for new Tasks when none is given (from the Agent config). */
   defaultPermissionMode?: PermissionMode;
   /** Lets `user` Members use Permission Mode `auto`, which gives the Engine full access to the machine (from the Agent config). */
@@ -36,8 +38,9 @@ const httpError = (status: number, message: string) => Object.assign(new Error(m
 
 export function startAgent(home: string, port: number, opts: AgentOptions = {}): Promise<StartedAgent> {
   const members = new Members(home);
-  const engine = opts.engine ?? claudeCode;
-  const tasks = new Tasks(home, engine, opts.completedRetentionDays ?? 30);
+  const engines = new Map<EngineId, Engine>([['claude-code', opts.engine ?? claudeCode]]);
+  if (!opts.engine || opts.codexEngine) engines.set('codex', opts.codexEngine ?? codexForAgent(home));
+  const tasks = new Tasks(home, engines, opts.completedRetentionDays ?? 30);
   const allowUserAuto = !!opts.allowUserAuto;
   if (!allowUserAuto) {
     const admins = new Set(members.list().filter((m) => m.accessLevel === 'admin').map((m) => m.id));
@@ -116,7 +119,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
           ws.close(1003, 'invalid JSON');
           return;
         }
-        handle(req, { info, member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode, allowUserAuto })
+        handle(req, { info, member, tokenId, members, sockets, engines, tasks, ws, subscriptions, defaultPermissionMode, allowUserAuto })
           .catch((e): Response => ({ type: 'response', id: req.id, error: { message: e instanceof Error ? e.message : String(e) } }))
           .then((res) => ws.send(JSON.stringify(res)));
       });
@@ -136,7 +139,7 @@ interface Context {
   tokenId: string;
   members: Members;
   sockets: Map<WebSocket, { member: Member; tokenId: string }>;
-  engine: Engine;
+  engines: Map<EngineId, Engine>;
   tasks: Tasks;
   ws: WebSocket;
   subscriptions: Map<string, () => void>;
@@ -147,7 +150,12 @@ interface Context {
 const permissionModes: PermissionMode[] = ['ask', 'auto'];
 const accessLevels: AccessLevel[] = ['admin', 'user'];
 
-async function handle(req: Request, { info, member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode, allowUserAuto }: Context): Promise<Response> {
+async function availability(engine: Engine): Promise<EngineAvailability> {
+  const result = (await engine.status?.()) ?? 'ready';
+  return typeof result === 'string' ? { status: result } : result;
+}
+
+async function handle(req: Request, { info, member, tokenId, members, sockets, engines, tasks, ws, subscriptions, defaultPermissionMode, allowUserAuto }: Context): Promise<Response> {
   const ok = (result: unknown): Response => ({ type: 'response', id: req.id, result });
   const fail = (message: string): Response => ({ type: 'response', id: req.id, error: { message } });
   const p = (req.params ?? {}) as Record<string, any>;
@@ -176,17 +184,27 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
       const result: AgentHello = {
         ...info(),
         member: { id: member.id, name: member.name, accessLevel: member.accessLevel, tokenId },
-        engines: [{ id: 'claude-code', status: (await engine.status?.()) ?? 'ready' }],
+        engines: await Promise.all([...engines].map(async ([id, engine]) => ({ id, ...await availability(engine) }))),
         permissionModes: canUseAuto ? ['ask', 'auto'] : ['ask'],
       };
       return ok(result);
     }
-    case 'task.create':
+    case 'task.create': {
       if (typeof p.name !== 'string' || !p.name.trim()) return fail('name is required');
       if (p.permissionMode !== undefined && !permissionModes.includes(p.permissionMode)) return fail('invalid permissionMode');
       if (p.permissionMode === 'auto' && !canUseAuto)
         return fail('Only an admin can create a Task with Permission Mode auto. Choose ask, or ask an admin to set allowUserAuto in the Agent config.');
-      return ok(tasks.create(p.name.trim(), member, p.permissionMode ?? (canUseAuto ? defaultPermissionMode : 'ask')));
+      const permissionMode = p.permissionMode ?? (canUseAuto ? defaultPermissionMode : 'ask');
+      const candidates = p.engine === undefined ? [...engines.keys()] : [p.engine];
+      for (const id of candidates) {
+        const engine = engines.get(id);
+        if (!engine) return fail(`This Agent build does not support Engine "${id}". Install an Agent Update that supports this Engine.`);
+        const { status } = await availability(engine);
+        if (status === 'ready') return ok(tasks.create(p.name.trim(), member, permissionMode, id));
+        if (p.engine !== undefined) return fail(`Engine ${id} is ${status}`);
+      }
+      return fail('No ready Engine available');
+    }
     case 'task.list':
       return ok(tasks.list(member));
     case 'task.pause':

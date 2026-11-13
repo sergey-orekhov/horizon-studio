@@ -1,6 +1,6 @@
 # <img src="assets/icon.png" alt="" width="40" align="top"> HorizonStudio
 
-An environment for distributed software development with AI. **Studio** (a web interface) connects to **Agents** on local and remote machines (Windows/macOS/Linux) and runs **Tasks** on them with AI tools (Engines), such as Claude Code. Work continues when Studio disconnects and survives a machine reboot.
+An environment for distributed software development with AI. **Studio** (a web interface) connects to **Agents** on local and remote machines (Windows/macOS/Linux) and runs **Tasks** on them with AI tools (Engines), Claude Code and Codex. Work continues when Studio disconnects and survives a machine reboot.
 
 ## Components
 
@@ -20,7 +20,7 @@ npm ci
 npm run build
 ```
 
-On the Agent's machine, log in to Claude Code as the user the Agent will run under: install [Claude Code](https://code.claude.com/docs/en/setup), run `claude` and log in (`/login`). The Agent uses these credentials. With a Claude subscription login, its work counts against the subscription's limits.
+For Claude Code Tasks, log in to Claude Code on the Agent's machine as the user the Agent will run under: install [Claude Code](https://code.claude.com/docs/en/setup), run `claude` and log in (`/login`). The Agent uses these credentials. With a Claude subscription login, its work counts against the subscription's limits.
 
 The Agent installs as a user service, without administrator rights. Run `install` from the repository directory, as the user the Agent will run under. The first install prints the **admin Access Token**. Save it, because it is not shown again. To check it works on any OS: `curl http://127.0.0.1:7400/health`.
 
@@ -115,3 +115,38 @@ A remote Agent connects through SSH: the Connection has the host, user, SSH port
 - [docs/spec/mvp.md](docs/spec/mvp.md): MVP specification
 - [docs/adr](docs/adr): architecture decisions
 - [docs/design/guide.md](docs/design/guide.md): Studio design guide
+
+## OpenAI Codex
+
+Codex is a pinned Agent dependency (`@openai/codex@0.166.0`). The normal `npm ci` and `npm run build` install it. Agent Update includes this dependency, so a global Codex installation or a PATH override is unnecessary.
+
+On the Agent machine, sign in under the OS user that runs Agent. From the repository directory, choose one method.
+
+```sh
+npx @openai/codex login                 # ChatGPT subscription
+npx @openai/codex login --device-auth   # Headless machine
+npx @openai/codex login --with-api-key  # API key read from stdin
+```
+
+Device authentication may need to be enabled in your ChatGPT security settings. Codex manages the local credential cache. Studio does not receive the key or tokens, and the Agent service reuses this cache without requiring API-key environment variables. Reconnect Studio after login to refresh Engine status and the displayed login method.
+
+The new Task form lists both Engines with their status. Unavailable Engines are visible but disabled. The first ready Engine is selected in a fixed order, Claude Code followed by Codex. Each Task keeps its selected Engine. Existing Tasks continue to use Claude Code.
+
+| Codex Permission Mode | Approval policy | Sandbox |
+| --- | --- | --- |
+| Ask | untrusted | workspace-write |
+| Auto | never | danger-full-access |
+
+On Windows, Ask also sets `windows.sandbox = "unelevated"` for new and resumed threads. A sandbox startup error appears in the chat. Auto permits full machine access as the Agent's OS user. Treat members who can run Tasks as trusted operators; see issue #41.
+
+Codex command and file-change approval requests appear as Waiting in Studio. Allow, Always allow and Deny apply to that request or Session. A failed Engine ends the turn with an error and leaves the Task active. The next message starts a fresh process using the saved thread ID. Pausing, resuming and Agent restart recovery retain the conversation.
+
+The adapter shows completed messages and tool results. Streaming, model selection, context controls and usage panels are outside this change. See [ADR 0005](docs/adr/0005-codex-app-server.md).
+
+To regenerate the protocol declarations after an intentional Codex dependency upgrade, run the following commands.
+
+```sh
+npm run generate:codex -w @horizon/agent
+npm run typecheck
+npm test
+```

@@ -18,7 +18,11 @@ jobs:
       - run: npm run build
   # Installing the Agent as a service on Windows: real install / uninstall (writes HKCU\…\Run).
   windows-launcher:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
