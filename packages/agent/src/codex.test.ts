@@ -230,3 +230,12 @@ test('Codex reports context usage after a turn and compacts the thread as a turn
   assert.deepEqual(items.slice(-2), [{ kind: 'compact' }, { kind: 'turn_end' }]);
   assert.deepEqual(usages.at(-1), { usedTokens: 300, windowTokens: 200000 });
 });
+
+test('Codex usage maps plan limit windows and credits; an API key account has no plan limits', { timeout: 10_000 }, async () => {
+  assert.deepEqual(await engineFor('chatgpt').usage!(), {
+    plan: 'plus', limitsApply: true,
+    limits: [{ name: '5-hour', percent: 42, resetsAt: new Date(1800000000 * 1000).toISOString() }, { name: '7-day', percent: 7 }],
+    extra: { enabled: true, balance: '12.50' },
+  });
+  assert.deepEqual(await engineFor('apiKey').usage!(), { limitsApply: false, limits: [] });
+});

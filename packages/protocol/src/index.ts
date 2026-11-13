@@ -90,7 +90,41 @@ export interface Task {
    * The last Session is the one that works; earlier ones were reset and are `archived`, kept read-only.
    * `model`: the Session's model; absent means the Engine's default. `context`: the last measured context window.
    */
-  sessions: { id: string; model?: string; context?: ContextUsage; archived?: boolean }[];
+  sessions: { id: string; model?: string; context?: ContextUsage; totals?: SessionTotals; archived?: boolean }[];
+}
+
+/** What a Session has used so far, across Engine restarts; fields the Engine does not report are absent. */
+export interface SessionTotals {
+  costUsd?: number;
+  durationMs?: number;
+  apiDurationMs?: number;
+  linesAdded?: number;
+  linesRemoved?: number;
+}
+
+/** Plan limits and usage of the account an Engine runs under on an Agent. */
+export interface AccountUsage {
+  plan?: string;
+  /** False when plan limits do not apply, for example with an API key; then `limits` is empty. */
+  limitsApply: boolean;
+  /** Usage windows: percentage used and when the window resets. */
+  limits: { name: string; percent: number; resetsAt?: string }[];
+  /** Usage beyond the plan, paid separately. */
+  extra?: { enabled: boolean; used?: number; limit?: number; percent?: number; currency?: string; balance?: string };
+  /** From the Engine's scan of local transcripts on the Agent's machine: the last 24 hours and 7 days. */
+  local?: { day: LocalUsage; week: LocalUsage };
+  /** When it was fetched. */
+  at: string;
+}
+
+export interface LocalUsage {
+  requests: number;
+  sessions: number;
+  /** What made the usage heavy; categories overlap, so percentages do not add up to 100. */
+  behaviors: { key: string; percent: number }[];
+  recommendations: { title: string; detail?: string; percent: number }[];
+  /** Agents, skills, plugins and MCP servers by share of usage. */
+  sources: { name: string; percent: number }[];
 }
 
 /** How full a Session's context window is, as last measured. */

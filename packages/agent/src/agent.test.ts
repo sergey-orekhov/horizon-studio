@@ -852,3 +852,60 @@ test('Context: measured after each turn and kept across a restart; compact runs 
   const old = readFileSync(join(home, 'tasks', task.id, 'sessions', `${first}.jsonl`), 'utf8');
   assert.match(old, /"status":"reset"/, 'the old history is kept and marked');
 });
+
+test('Usage: Session totals add up across Engine restarts; plan limits are cached, admin only, and kept when a refresh fails', { timeout: 20_000 }, async (t) => {
+  let refreshFails = false;
+  const engine: Engine = Object.assign(
+    (opts: Parameters<Engine>[0]) => ({
+      send: () => setImmediate(() => {
+        opts.onEngineSessionId('usage-session');
+        opts.onItem({ kind: 'turn_end' });
+        // Each Engine process reports only its own totals.
+        opts.onUsage?.({ totals: { costUsd: 0.5, linesAdded: 3 }, account: { limitsApply: true, limits: [{ name: '5-hour', percent: 10 }] } });
+      }),
+      close: () => {},
+    }),
+    {
+      usage: async () => {
+        if (refreshFails) throw new Error('network is down');
+        return { plan: 'pro', limitsApply: true, limits: [{ name: '5-hour', percent: 20 }], local: { day: { requests: 1, sessions: 1, behaviors: [], recommendations: [], sources: [] }, week: { requests: 2, sessions: 1, behaviors: [], recommendations: [], sources: [] } } };
+      },
+    },
+  );
+  const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
+  const a1 = await startAgent(home, 0, { engine });
+  const port1 = (a1.server.address() as AddressInfo).port;
+  const c1 = client(await connect(port1, a1.adminToken!));
+  const task: Task = await c1.call('task.create', { name: 'usage' });
+  const sessionId = task.sessions[0].id;
+  const totals = async (c: typeof c1) => (await c.call('task.list')).find((x: Task) => x.id === task.id).sessions[0].totals;
+  await c1.call('session.send', { sessionId, text: 'one' });
+  while (!(await totals(c1))) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(await totals(c1), { costUsd: 0.5, linesAdded: 3 });
+  assert.deepEqual((await c1.call('agent.usage', { engine: 'claude-code' })).usage.limits, [{ name: '5-hour', percent: 10 }], 'a turn updates the plan limits');
+
+  const full = await c1.call('agent.usage', { engine: 'claude-code', refresh: true });
+  assert.equal(full.usage.local.week.requests, 2);
+  const { token: bobToken } = await c1.call('member.create', { name: 'bob', accessLevel: 'user' });
+  const bob = client(await connect(port1, bobToken));
+  assert.equal(await bob.call('agent.usage', { engine: 'claude-code' }), undefined, 'a user cannot see plan limits');
+  bob.close();
+  c1.close();
+  a1.stop();
+
+  // A new Agent process starts a new Engine process; its totals add to the saved ones.
+  const a2 = await startAgent(home, 0, { engine });
+  t.after(() => a2.stop());
+  const c2 = client(await connect((a2.server.address() as AddressInfo).port, a1.adminToken!));
+  t.after(() => c2.close());
+  await c2.call('session.send', { sessionId, text: 'two' });
+  while ((await totals(c2)).costUsd !== 1) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(await totals(c2), { costUsd: 1, linesAdded: 6 });
+
+  // When a refresh fails, the last values come back with the error, including the earlier local scan.
+  refreshFails = true;
+  const failed = await c2.call('agent.usage', { engine: 'claude-code', refresh: true });
+  assert.equal(failed.error, 'network is down');
+  assert.equal(failed.usage.local.week.requests, 2);
+  assert.ok(failed.usage.at);
+});

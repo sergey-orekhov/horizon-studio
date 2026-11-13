@@ -352,3 +352,31 @@ aside h3 {
   flex-basis: 100%;
   order: 1;
 }
+
+.usage {
+  overflow-y: auto;
+}
+.engine-usage {
+  border-top: 1px solid var(--line);
+  padding: 0.5rem 0 1rem;
+}
+.usage-meta {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+.limits td {
+  padding: 0.15rem 0.75rem 0.15rem 0;
+}
+.limits .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.local-usage {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem;
+}
+.local-usage ul {
+  margin: 0.25rem 0 0.75rem;
+}

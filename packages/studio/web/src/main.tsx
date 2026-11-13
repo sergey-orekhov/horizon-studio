@@ -6,6 +6,7 @@ import { Chat } from './chat.tsx';
 import { Members } from './members.tsx';
 import { Shell } from './shell.tsx';
 import { Context } from './context.tsx';
+import { Usage } from './usage.tsx';
 import './style.css';
 
 const modeLabel: Record<PermissionMode, string> = {
@@ -72,6 +73,9 @@ function App() {
   /** The Agent whose Members are open in the main panel instead of a Task. */
   const [membersOf, setMembersOf] = useState<string>();
   const membersAgent = agents.find((a) => a.id === membersOf && a.hello?.member.accessLevel === 'admin');
+  /** Agent whose plan limits and usage are open in the main panel. */
+  const [usageOf, setUsageOf] = useState<string>();
+  const usageAgent = agents.find((a) => a.id === usageOf && a.hello?.member.accessLevel === 'admin');
   const [error, setError] = useState('');
   /** Agent Update progress per Agent; `pending` is the build whose result is awaited from the Agent. */
   const [updating, setUpdating] = useState<Record<string, { text: string; pending?: string }>>({});
@@ -149,7 +153,7 @@ function App() {
     form.reset();
     await loadTasks(agentId); // so the Task is listed at once, without waiting for the event
     setSelected({ agentId, taskId: (res.result as Task).id });
-    setMembersOf(undefined);
+    (setMembersOf(undefined), setUsageOf(undefined));
   }
 
   // Task state comes from Session events, so all Studios see it at once.
@@ -203,7 +207,7 @@ function App() {
             <li key={agent.id + t.id}>
               <button
                 className={`${selected?.agentId === agent.id && selected.taskId === t.id ? 'active' : ''} ${t.state}`}
-                onClick={() => (setSelected({ agentId: agent.id, taskId: t.id }), setMembersOf(undefined))}
+                onClick={() => (setSelected({ agentId: agent.id, taskId: t.id }), (setMembersOf(undefined), setUsageOf(undefined)))}
               >
                 {t.state === 'paused' && <span title="Paused">⏸ </span>}
                 {t.state === 'completed' && <span title="Completed">✓ </span>}
@@ -260,7 +264,12 @@ function App() {
                 {a.hello ? `v${a.hello.version} · ${a.hello.member.name}` : stateLabel[a.state]}
               </span>
               {a.hello?.member.accessLevel === 'admin' && (
-                <button className="link" title="Members and Access Tokens" onClick={() => setMembersOf(a.id)}>
+                <button className="link" title="Plan limits and usage" onClick={() => (setUsageOf(a.id), setMembersOf(undefined))}>
+                  Usage
+                </button>
+              )}
+              {a.hello?.member.accessLevel === 'admin' && (
+                <button className="link" title="Members and Access Tokens" onClick={() => (setMembersOf(a.id), setUsageOf(undefined))}>
                   Member
                 </button>
               )}
@@ -326,7 +335,13 @@ function App() {
       </aside>
 
       <main>
-        {membersAgent?.hello ? (
+        {usageAgent?.hello ? (
+          <Usage
+            key={usageAgent.id}
+            engines={usageAgent.hello.engines.filter((e) => e.status === 'ready').map((e) => ({ id: e.id, name: engineName[e.id] }))}
+            request={(method, params) => request(method, params, usageAgent.id)}
+          />
+        ) : membersAgent?.hello ? (
           <Members
             key={membersAgent.id}
             self={membersAgent.hello.member}
@@ -392,6 +407,7 @@ function App() {
             )}
             <Context
               context={viewed?.context}
+              totals={viewed?.totals}
               canCompact={!readOnly && agentOnline && state === 'active' && !!viewed?.context}
               canReset={!readOnly && agentOnline && state !== 'completed'}
               onCompact={async () => {

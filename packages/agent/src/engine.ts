@@ -1,5 +1,6 @@
 import { query, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { ContextUsage, EngineAvailability, EngineStatus, PermissionMode, SessionItem } from '@horizon/protocol';
+import type { AccountUsage, ContextUsage, EngineAvailability, EngineStatus, PermissionMode, SessionItem, SessionTotals } from '@horizon/protocol';
+import { readClaudeUsage } from './usage.ts';
 
 /** A running Engine for one Session. */
 export interface EngineRun {
@@ -28,6 +29,8 @@ export interface EngineOptions {
   onModelUnavailable?(): void;
   /** The context window as measured after a turn. */
   onContext?(usage: Omit<ContextUsage, 'at'>): void;
+  /** After a turn: what this Engine process has used, and the account's plan limits. */
+  onUsage?(usage: { totals?: SessionTotals; account?: Omit<AccountUsage, 'at'> }): void;
   /** Decision on a permission request; `always` means do not ask about this again in this Session. */
   askPermission(req: { tool: string; input: unknown; reason?: string }): Promise<{ allow: boolean; always: boolean }>;
 }
@@ -36,6 +39,8 @@ export interface Engine {
   (opts: EngineOptions): EngineRun;
   /** Whether the Engine is ready on this machine; without a check it counts as ready. */
   status?(): Promise<EngineStatus | EngineAvailability>;
+  /** The account's plan limits and usage, from a short-lived Engine process. */
+  usage?(): Promise<Omit<AccountUsage, 'at'>>;
 }
 
 /** Claude Code through the Claude Agent SDK, in streaming input mode: one process per Session. */
@@ -83,6 +88,8 @@ export function createClaudeEngine(runQuery: typeof query = query): Engine {
                 }),
                 () => {},
               );
+            if (opts.onUsage && !closed)
+              readClaudeUsage(q, true).then(({ account, totals }) => opts.onUsage?.({ account, totals }), () => {});
             if (msg.subtype !== 'success') break;
           }
         }
@@ -130,6 +137,15 @@ export function createClaudeEngine(runQuery: typeof query = query): Engine {
       return 'not installed';
     } finally {
       q?.close();
+    }
+  };
+
+  engine.usage = async () => {
+    const q = runQuery({ prompt: new Inbox<SDKUserMessage>() });
+    try {
+      return (await readClaudeUsage(q, false)).account;
+    } finally {
+      q.close();
     }
   };
 

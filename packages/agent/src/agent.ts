@@ -1,8 +1,8 @@
-import { writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { join } from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { AccessLevel, AgentHello, TasksEvent, AgentInfo, EngineAvailability, EngineId, PermissionMode, Request, Response } from '@horizon/protocol';
+import type { AccessLevel, AccountUsage, AgentHello, AgentInfo, EngineAvailability, EngineId, PermissionMode, Request, Response, TasksEvent } from '@horizon/protocol';
 import { currentVersion, installVersion, lastUpdate, type AgentBuild } from '@horizon/launcher/versions';
 import pkg from '../package.json' with { type: 'json' };
 import { claudeCode, type Engine } from './engine.ts';
@@ -43,6 +43,15 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
   if (!opts.engine || opts.codexEngine) engines.set('codex', opts.codexEngine ?? codexForAgent(home));
   const tasks = new Tasks(home, engines, opts.completedRetentionDays ?? 30);
   const shells = new Shells();
+  // The last known plan limits per Engine, kept on disk so they can be shown when fetching fails.
+  const usageFile = join(home, 'usage.json');
+  const usage: Partial<Record<EngineId, AccountUsage>> = existsSync(usageFile) ? JSON.parse(readFileSync(usageFile, 'utf8')) : {};
+  const storeUsage = (engine: EngineId, next: Omit<AccountUsage, 'at'>) => {
+    // A turn reports limits without the local scan; keep the last scan until a full refresh.
+    usage[engine] = { local: usage[engine]?.local, ...next, at: new Date().toISOString() };
+    writeFileSync(usageFile, JSON.stringify(usage, null, 2));
+  };
+  tasks.onAccountUsage = storeUsage;
   const allowUserAuto = !!opts.allowUserAuto;
   if (!allowUserAuto) {
     const admins = new Set(members.list().filter((m) => m.accessLevel === 'admin').map((m) => m.id));
@@ -122,7 +131,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
           ws.close(1003, 'invalid JSON');
           return;
         }
-        handle(req, { info, member, tokenId, members, sockets, engines, tasks, shells, ws, subscriptions, defaultPermissionMode, allowUserAuto })
+        handle(req, { info, member, tokenId, members, sockets, engines, tasks, shells, usage, storeUsage, ws, subscriptions, defaultPermissionMode, allowUserAuto })
           .catch((e): Response => ({ type: 'response', id: req.id, error: { message: e instanceof Error ? e.message : String(e) } }))
           .then((res) => ws.send(JSON.stringify(res)));
       });
@@ -146,6 +155,8 @@ interface Context {
   engines: Map<EngineId, Engine>;
   tasks: Tasks;
   shells: Shells;
+  usage: Partial<Record<EngineId, AccountUsage>>;
+  storeUsage(engine: EngineId, next: Omit<AccountUsage, 'at'>): void;
   ws: WebSocket;
   subscriptions: Map<string, () => void>;
   defaultPermissionMode: PermissionMode;
@@ -162,7 +173,7 @@ async function availability(engine: Engine): Promise<EngineAvailability> {
   return typeof result === 'string' ? { status: result } : result;
 }
 
-async function handle(req: Request, { info, member, tokenId, members, sockets, engines, tasks, shells, ws, subscriptions, defaultPermissionMode, allowUserAuto }: Context): Promise<Response> {
+async function handle(req: Request, { info, member, tokenId, members, sockets, engines, tasks, shells, usage, storeUsage, ws, subscriptions, defaultPermissionMode, allowUserAuto }: Context): Promise<Response> {
   const ok = (result: unknown): Response => ({ type: 'response', id: req.id, result });
   const fail = (message: string): Response => ({ type: 'response', id: req.id, error: { message } });
   const p = (req.params ?? {}) as Record<string, any>;
@@ -250,6 +261,22 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
         shell.resize(p.cols, p.rows);
       } else shells.close((s) => s.pty === shell);
       return ok(null);
+    }
+    case 'agent.usage': {
+      // Plan limits and local usage describe the Agent's account, not a Member's work.
+      if (member.accessLevel !== 'admin') return fail('Only an admin can see plan limits and usage.');
+      const engine = engines.get(p.engine);
+      if (!engine) return fail('unknown engine');
+      let error: string | undefined;
+      if (p.refresh) {
+        try {
+          if (!engine.usage) throw new Error('This Engine does not report usage.');
+          storeUsage(p.engine, await engine.usage());
+        } catch (e) {
+          error = e instanceof Error ? e.message : String(e);
+        }
+      }
+      return ok({ usage: usage[p.engine as EngineId] ?? null, ...(error ? { error } : {}) });
     }
     case 'session.compact': {
       const session = tasks.session(p.sessionId, member);
