@@ -1,5 +1,5 @@
 import { query, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { EngineAvailability, EngineStatus, PermissionMode, SessionItem } from '@horizon/protocol';
+import type { ContextUsage, EngineAvailability, EngineStatus, PermissionMode, SessionItem } from '@horizon/protocol';
 
 /** A running Engine for one Session. */
 export interface EngineRun {
@@ -7,6 +7,8 @@ export interface EngineRun {
   close(): void;
   /** Switches the model of the running Engine; `undefined` returns to the Engine's default. Rejects an unknown model. */
   setModel?(model: string | undefined): Promise<void>;
+  /** Compacts the conversation as a turn: it ends with `turn_end`. */
+  compact?(): void;
 }
 
 export interface EngineOptions {
@@ -24,6 +26,8 @@ export interface EngineOptions {
   onExit(): void;
   /** The model is not available for this account; called after the failed turn has ended. */
   onModelUnavailable?(): void;
+  /** The context window as measured after a turn. */
+  onContext?(usage: Omit<ContextUsage, 'at'>): void;
   /** Decision on a permission request; `always` means do not ask about this again in this Session. */
   askPermission(req: { tool: string; input: unknown; reason?: string }): Promise<{ allow: boolean; always: boolean }>;
 }
@@ -69,6 +73,16 @@ export function createClaudeEngine(runQuery: typeof query = query): Engine {
               modelUnavailable = false;
               opts.onModelUnavailable?.();
             }
+            // The summary is cheap (milliseconds) and still breaks the window down by category.
+            if (opts.onContext && !closed)
+              q.getContextUsage({ detail: 'summary' }).then(
+                (u) => opts.onContext?.({
+                  usedTokens: u.totalTokens,
+                  windowTokens: u.rawMaxTokens,
+                  categories: u.categories.map(({ name, tokens, kind }) => ({ name, tokens, kind })),
+                }),
+                () => {},
+              );
             if (msg.subtype !== 'success') break;
           }
         }
@@ -92,6 +106,11 @@ export function createClaudeEngine(runQuery: typeof query = query): Engine {
         q.close();
       },
       setModel: (model) => q.setModel(model),
+      // Claude Code runs slash commands sent as input; /compact replaces the history with a summary.
+      compact() {
+        awaitingTurn = true;
+        inbox.push({ type: 'user', message: { role: 'user', content: '/compact' }, parent_tool_use_id: null });
+      },
     };
   };
 
@@ -123,6 +142,8 @@ function toItems(msg: SDKMessage, opts: EngineOptions) {
   switch (msg.type) {
     case 'system':
       if (msg.subtype === 'init') opts.onEngineSessionId(msg.session_id);
+      if (msg.subtype === 'compact_boundary')
+        opts.onItem({ kind: 'compact', preTokens: msg.compact_metadata.pre_tokens, postTokens: msg.compact_metadata.post_tokens });
       return;
     case 'assistant':
       if (msg.parent_tool_use_id) return; // subagent events are not shown yet

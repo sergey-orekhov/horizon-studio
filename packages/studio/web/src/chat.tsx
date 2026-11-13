@@ -12,10 +12,12 @@ interface Props {
   engineName: string;
   onSend(text: string): Promise<boolean>;
   onAnswer: OnAnswer;
+  /** An archived Session: its history is shown, nothing can be sent. */
+  readOnly?: boolean;
 }
 
-export function Chat({ events, state, engine, engineName, onSend, onAnswer }: Props) {
-  const stopped = state !== 'active';
+export function Chat({ events, state, engine, engineName, onSend, onAnswer, readOnly }: Props) {
+  const stopped = state !== 'active' || !!readOnly;
   const [text, setText] = useState('');
   const end = useRef<HTMLDivElement>(null);
   const results = new Map<string, ToolResult>();
@@ -49,7 +51,7 @@ export function Chat({ events, state, engine, engineName, onSend, onAnswer }: Pr
           <Item key={e.seq} item={e.item} results={results} answers={answers} engineName={engineName} onAnswer={onAnswer} />
         ))}
         {stopped ? (
-          <p className="muted">{state === 'paused' ? 'Task is paused' : 'Task is completed'}</p>
+          <p className="muted">{readOnly ? 'This Session was reset. The Task continues in the current Session.' : state === 'paused' ? 'Task is paused' : 'Task is completed'}</p>
         ) : waiting ? (
           <p className="warn">Waiting for your decision</p>
         ) : (
@@ -63,7 +65,9 @@ export function Chat({ events, state, engine, engineName, onSend, onAnswer }: Pr
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey) && submit(e)}
           placeholder={
-            state === 'paused'
+            readOnly
+              ? 'This Session was reset and is read-only'
+              : state === 'paused'
               ? 'Task is paused. Click Resume to continue'
               : state === 'completed'
                 ? 'Task is completed. Reopen it to continue'
@@ -137,6 +141,14 @@ function Item({ item, results, answers, engineName, onAnswer }: ItemProps) {
       return <div className="divider">{statusLabel[item.status]}</div>;
     case 'turn_end':
       return item.error ? <p className="warn">The turn ended with an error: {item.error}</p> : null;
+    case 'compact':
+      return (
+        <div className="divider">
+          {item.preTokens && item.postTokens
+            ? `Context compacted: ${item.preTokens.toLocaleString()} → ${item.postTokens.toLocaleString()} tokens`
+            : 'Context compacted'}
+        </div>
+      );
     case 'model':
       return <div className="divider">{item.model ? `Model changed to ${item.model}` : "Model changed to the Engine default"}</div>;
     case 'error':
@@ -145,6 +157,7 @@ function Item({ item, results, answers, engineName, onAnswer }: ItemProps) {
 }
 
 const statusLabel = {
+  reset: 'Context reset. The Task continues in a new Session',
   paused: 'Paused',
   resumed: 'Resumed',
   completed: 'Completed',

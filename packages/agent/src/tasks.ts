@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { EngineId, PermissionMode, SessionEvent, SessionItem, Task, TaskState } from '@horizon/protocol';
+import type { ContextUsage, EngineId, PermissionMode, SessionEvent, SessionItem, Task, TaskState } from '@horizon/protocol';
 import type { Engine, EngineRun } from './engine.ts';
 import type { Member } from './members.ts';
 
@@ -12,6 +12,10 @@ interface StoredSession {
   pausedMidTurn?: boolean;
   /** Absent means the Engine's default. */
   model?: string;
+  /** The last measured context window, shown while no Engine runs. */
+  context?: ContextUsage;
+  /** Replaced by a newer Session when the context was reset; kept read-only. */
+  archived?: boolean;
 }
 
 interface StoredTask extends Task {
@@ -136,11 +140,28 @@ export class Tasks {
     return changed;
   }
 
+  /**
+   * Starts the Task over with an empty context: a new Session takes over with the same model,
+   * and the current one stops and stays in the history, read-only.
+   */
+  resetContext(taskId: string, member: Member): Task | string {
+    const task = this.tasks.get(taskId);
+    if (!task || !canSee(member, task)) return 'unknown task';
+    if (task.state === 'completed') return 'A completed Task cannot be reset. Reopen the Task first.';
+    const current = task.sessions.findLast((s) => !s.archived)!;
+    this.load(task, current.id).reset();
+    current.archived = true;
+    task.sessions.push({ id: randomUUID(), ...(current.model ? { model: current.model } : {}) });
+    this.save(task);
+    return this.public(task);
+  }
+
   /** After an Agent restart, continues Sessions of active Tasks that were interrupted mid-turn. */
   recover() {
     for (const task of this.tasks.values()) {
       if ((task.state ?? 'active') !== 'active') continue;
       for (const s of task.sessions) {
+        if (s.archived) continue;
         const session = this.load(task, s.id);
         if (session.interrupted) session.recover();
       }
@@ -180,7 +201,7 @@ export class Tasks {
     task.state = to;
     task.completedAt = to === 'completed' ? new Date().toISOString() : undefined;
     this.save(task);
-    for (const s of task.sessions) apply(this.load(task, s.id));
+    for (const s of task.sessions) if (!s.archived) apply(this.load(task, s.id));
     this.save(task);
     return this.public(task);
   }
@@ -197,7 +218,7 @@ export class Tasks {
 
   private public(t: StoredTask): Task {
     const deleteAt = t.completedAt && new Date(Date.parse(t.completedAt) + this.retentionMs).toISOString();
-    return { ...t, deleteAt, sessions: t.sessions.map(({ id, model }) => ({ id, ...(model ? { model } : {}) })) };
+    return { ...t, deleteAt, sessions: t.sessions.map(({ id, model, context, archived }) => ({ id, model, context, archived })) };
   }
 
   private load(task: StoredTask, sessionId: string): Session {
@@ -268,6 +289,7 @@ export class Session {
 
   /** Sends a message; false if the Task is paused or completed. */
   send(text: string): boolean {
+    if (this.stored.archived) throw new Error('This Session was reset and is read-only. Continue in the current Session.');
     if (this.task.state === 'paused' || this.task.state === 'completed') return false;
     if (this.task.engine === 'codex' && this.run && this.midTurn)
       throw new Error('Codex is working. Wait for the turn to finish or pause the Task.');
@@ -299,6 +321,23 @@ export class Session {
     if (!status) return;
     this.stored.pausedMidTurn = this.midTurn || unfinished;
     this.append({ kind: 'status', status });
+  }
+
+  /** Compacts the context: the Engine replaces the conversation with a summary and keeps working. */
+  compact() {
+    if (this.stored.archived) throw new Error('This Session was reset and is read-only.');
+    if (this.task.state !== 'active') throw new Error('Resume the Task to compact its context.');
+    if (this.midTurn) throw new Error('Wait for the turn to finish, then compact.');
+    if (!this.stored.engineSessionId) throw new Error('There is nothing to compact yet.');
+    const run = this.start();
+    if (!run.compact) throw new Error('This Engine cannot compact its context.');
+    run.compact();
+  }
+
+  /** Stops this Session for good; a new Session takes over the Task. */
+  reset() {
+    this.stop();
+    this.append({ kind: 'status', status: 'reset' });
   }
 
   /** Switches the model, for the running Engine too; `undefined` returns to the Engine's default. */
@@ -365,6 +404,11 @@ export class Session {
       resume: this.stored.engineSessionId,
       model: this.stored.model,
       onModelUnavailable: () => live() && this.onModelUnavailable(),
+      onContext: (usage) => {
+        if (!live()) return;
+        this.stored.context = { ...usage, at: new Date().toISOString() };
+        this.save();
+      },
       initialInput: this.task.engine === 'codex' ? this.history(0)
         .flatMap(({ item }) => item.kind === 'user' ? [item.text] : []).join('\n\n') : undefined,
       onExit: () => {

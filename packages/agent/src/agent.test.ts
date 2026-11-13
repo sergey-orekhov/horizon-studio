@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import WebSocket from 'ws';
-import type { SessionEvent, Task } from '@horizon/protocol';
+import type { SessionEvent, SessionItem, Task } from '@horizon/protocol';
 import { startAgent } from './agent.ts';
 import type { Engine } from './engine.ts';
 import { createCodexEngine } from './codex.ts';
@@ -785,4 +785,70 @@ test('Model: chosen at creation, switched mid-run, kept across a restart; an una
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(starts.at(-1), 'm2');
   assert.match(sent.at(-1)!, /^\[HorizonStudio\] The Task was resumed/);
+});
+
+test('Context: measured after each turn and kept across a restart; compact runs as a turn; reset starts a new Session', { timeout: 20_000 }, async (t) => {
+  const starts: (string | undefined)[] = [];
+  const engine: Engine = (opts) => {
+    starts.push(opts.model);
+    const turn = (items: SessionItem[], used: number) => setImmediate(() => {
+      opts.onEngineSessionId('ctx-session');
+      for (const item of items) opts.onItem(item);
+      opts.onContext?.({ usedTokens: used, windowTokens: 1000 });
+    });
+    return {
+      send: () => turn([{ kind: 'text', text: 'ok' }, { kind: 'turn_end' }], 600),
+      compact: () => turn([{ kind: 'compact', preTokens: 600, postTokens: 100 }, { kind: 'turn_end' }], 100),
+      close: () => {},
+    };
+  };
+  const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
+  const a1 = await startAgent(home, 0, { engine });
+  const c1 = client(await connect((a1.server.address() as AddressInfo).port, a1.adminToken!));
+  const task: Task = await c1.call('task.create', { name: 'context', model: 'm1' });
+  const first = task.sessions[0].id;
+  const sessionsOf = async (c: typeof c1) => (await c.call('task.list')).find((x: Task) => x.id === task.id).sessions as Task['sessions'];
+  const waitFor = async (c: typeof c1, done: (s: Task['sessions']) => boolean) => {
+    while (!done(await sessionsOf(c))) await new Promise((r) => setTimeout(r, 10));
+    return sessionsOf(c);
+  };
+  assert.equal(await c1.call('session.compact', { sessionId: first }), undefined, 'nothing to compact before the first turn');
+  await c1.call('session.subscribe', { sessionId: first, fromSeq: 0 });
+  await c1.call('session.send', { sessionId: first, text: 'hi' });
+  let sessions = await waitFor(c1, (s) => s[0].context?.usedTokens === 600);
+  assert.equal(sessions[0].context?.windowTokens, 1000);
+  assert.ok(sessions[0].context?.at);
+
+  assert.equal(await c1.call('session.compact', { sessionId: first }), null);
+  await waitFor(c1, (s) => s[0].context?.usedTokens === 100);
+  const history = (await c1.until(5)).map((e) => e.item);
+  assert.deepEqual(history.slice(-2), [{ kind: 'compact', preTokens: 600, postTokens: 100 }, { kind: 'turn_end' }]);
+  await c1.call('task.pause', { taskId: task.id });
+  assert.equal(await c1.call('session.compact', { sessionId: first }), undefined, 'a paused Task cannot compact');
+  c1.close();
+  a1.stop();
+
+  // The last measurement survives a restart, without starting an Engine.
+  const a2 = await startAgent(home, 0, { engine });
+  t.after(() => a2.stop());
+  const c2 = client(await connect((a2.server.address() as AddressInfo).port, a1.adminToken!));
+  t.after(() => c2.close());
+  const startsBefore = starts.length;
+  assert.equal((await sessionsOf(c2))[0].context?.usedTokens, 100);
+  assert.equal(starts.length, startsBefore);
+
+  // Reset: a new Session with the same model takes over; the old one is archived and read-only.
+  const reset: Task = await c2.call('task.reset', { taskId: task.id });
+  assert.equal(reset.sessions.length, 2);
+  assert.deepEqual([reset.sessions[0].archived, reset.sessions[1].archived], [true, undefined]);
+  assert.equal(reset.sessions[1].model, 'm1');
+  assert.equal(reset.sessions[1].context, undefined, 'the new Session starts empty');
+  await c2.call('task.resume', { taskId: task.id });
+  assert.equal(await c2.call('session.send', { sessionId: first, text: 'x' }), undefined, 'the archived Session is read-only');
+  const second = reset.sessions[1].id;
+  await c2.call('session.send', { sessionId: second, text: 'hi' });
+  await waitFor(c2, (s) => s[1].context?.usedTokens === 600);
+  assert.equal(starts.at(-1), 'm1');
+  const old = readFileSync(join(home, 'tasks', task.id, 'sessions', `${first}.jsonl`), 'utf8');
+  assert.match(old, /"status":"reset"/, 'the old history is kept and marked');
 });

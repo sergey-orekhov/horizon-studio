@@ -205,3 +205,28 @@ test('Codex modelNotFound ends the turn and reports the unavailable model', { ti
   assert.deepEqual(result.items.at(-1), { kind: 'turn_end', error: 'The model is not available' });
   assert.equal(unavailable, 1);
 });
+
+test('Codex reports context usage after a turn and compacts the thread as a turn', { timeout: 10_000 }, async (t) => {
+  const usages: unknown[] = [];
+  const items: SessionItem[] = [];
+  let next!: () => void;
+  let ended = new Promise<void>((resolve) => { next = resolve; });
+  const run = engineFor('usage')({
+    cwd: process.cwd(), permissionMode: 'ask',
+    onExit: () => {}, onEngineSessionId: () => {}, askPermission: async () => ({ allow: false, always: false }),
+    onContext: (u) => usages.push(u),
+    onItem: (item) => {
+      items.push(item);
+      if (item.kind === 'turn_end') next();
+    },
+  });
+  t.after(() => run.close());
+  run.send('test');
+  await ended;
+  assert.deepEqual(usages, [{ usedTokens: 1200, windowTokens: 200000 }]);
+  ended = new Promise<void>((resolve) => { next = resolve; });
+  run.compact!();
+  await ended;
+  assert.deepEqual(items.slice(-2), [{ kind: 'compact' }, { kind: 'turn_end' }]);
+  assert.deepEqual(usages.at(-1), { usedTokens: 300, windowTokens: 200000 });
+});

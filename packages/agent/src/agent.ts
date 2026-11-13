@@ -251,6 +251,16 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
       } else shells.close((s) => s.pty === shell);
       return ok(null);
     }
+    case 'session.compact': {
+      const session = tasks.session(p.sessionId, member);
+      if (!session) return fail('unknown session');
+      session.compact();
+      return ok(null);
+    }
+    case 'task.reset': {
+      const task = tasks.resetContext(p.taskId, member);
+      return typeof task === 'string' ? fail(task) : ok(task);
+    }
     case 'session.setModel': {
       const session = tasks.session(p.sessionId, member);
       if (!session) return fail('unknown session');
