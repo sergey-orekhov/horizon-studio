@@ -320,3 +320,35 @@ aside h3 {
 .model {
   white-space: nowrap;
 }
+
+.context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  padding: 0.5rem 0;
+  font-size: 0.9rem;
+}
+.context meter {
+  width: 8rem;
+}
+.context details table {
+  font-size: 0.85rem;
+}
+.context .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding-left: 1rem;
+}
+.context-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.5rem;
+}
+.session-pick {
+  font-size: 0.9rem;
+}
+.context details[open] {
+  flex-basis: 100%;
+  order: 1;
+}

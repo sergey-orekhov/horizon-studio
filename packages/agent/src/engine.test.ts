@@ -86,3 +86,49 @@ test('Claude: the model goes to the SDK, setModel delegates, and model_not_found
   assert.deepEqual(items, [{ kind: 'turn_end', error: 'There is an issue with the selected model' }], 'the synthetic message is not shown');
   run.close();
 });
+
+test('Claude: /compact compacts as a turn, and context usage is measured after each turn', { timeout: 5_000 }, async () => {
+  const inputs: string[] = [];
+  const runQuery = (({ prompt }) => {
+    const messages = (async function* () {
+      if (typeof prompt === 'string') return;
+      for await (const m of prompt) {
+        const text = (m as { message: { content: string } }).message.content;
+        inputs.push(text);
+        yield { type: 'system', subtype: 'init', session_id: 'claude-thread' } as SDKMessage;
+        if (text === '/compact')
+          yield { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'manual', pre_tokens: 21541, post_tokens: 9066 } } as unknown as SDKMessage;
+        yield { type: 'result', subtype: 'success', is_error: false, result: '' } as SDKMessage;
+      }
+    })();
+    return Object.assign(messages, {
+      close() { void messages.return(); },
+      async getContextUsage() {
+        return { totalTokens: inputs.length === 1 ? 21528 : 9066, rawMaxTokens: 1000000, maxTokens: 1000000, percentage: 2,
+          categories: [{ id: 'messages', name: 'Messages', tokens: 8634, kind: 'used', color: 'x' }] };
+      },
+    }) as unknown as Query;
+  }) as typeof query;
+  const items: SessionItem[] = [];
+  const usages: unknown[] = [];
+  let measured!: () => void;
+  let next = new Promise<void>((resolve) => { measured = resolve; });
+  const run = createClaudeEngine(runQuery)({
+    cwd: process.cwd(), permissionMode: 'ask',
+    onItem: (item) => items.push(item), onExit: () => {}, onEngineSessionId: () => {},
+    onContext: (u) => (usages.push(u), measured()),
+    askPermission: async () => ({ allow: false, always: false }),
+  });
+  run.send('hi');
+  await next;
+  next = new Promise<void>((resolve) => { measured = resolve; });
+  run.compact!();
+  await next;
+  assert.deepEqual(inputs, ['hi', '/compact']);
+  assert.deepEqual(items, [{ kind: 'turn_end' }, { kind: 'compact', preTokens: 21541, postTokens: 9066 }, { kind: 'turn_end' }]);
+  assert.deepEqual(usages, [
+    { usedTokens: 21528, windowTokens: 1000000, categories: [{ name: 'Messages', tokens: 8634, kind: 'used' }] },
+    { usedTokens: 9066, windowTokens: 1000000, categories: [{ name: 'Messages', tokens: 8634, kind: 'used' }] },
+  ]);
+  run.close();
+});

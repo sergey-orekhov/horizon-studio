@@ -5,6 +5,7 @@ import { useStudio } from './studio.ts';
 import { Chat } from './chat.tsx';
 import { Members } from './members.tsx';
 import { Shell } from './shell.tsx';
+import { Context } from './context.tsx';
 import './style.css';
 
 const modeLabel: Record<PermissionMode, string> = {
@@ -115,7 +116,13 @@ function App() {
   const newTaskAuto = onlineAgents.find((a) => a.id === newTaskAgentId)?.hello?.permissionModes?.includes('auto') ?? true;
 
   // Subscribe to the selected Task's Session; after an Agent reconnect, subscribe again from the last seq.
-  const sessionId = task?.sessions[0].id;
+  // The last Session works; earlier ones were reset and can be viewed read-only.
+  const activeSession = task?.sessions.findLast((s) => !s.archived) ?? task?.sessions[0];
+  const [viewSession, setViewSession] = useState<string>();
+  useEffect(() => setViewSession(undefined), [selected?.taskId, activeSession?.id]);
+  const viewed = task?.sessions.find((s) => s.id === viewSession) ?? activeSession;
+  const sessionId = viewed?.id;
+  const readOnly = !!viewed?.archived;
   const selectedHello = agents.find((a) => a.id === selected?.agentId)?.hello;
   const shellKey = selected && `${selected.agentId} ${selected.taskId}`;
   const agentOnline = !!selected && online.split(',').includes(selected.agentId);
@@ -146,7 +153,7 @@ function App() {
   }
 
   // Task state comes from Session events, so all Studios see it at once.
-  const status = sessionId
+  const status = sessionId && !readOnly
     ? events[sessionId]?.findLast((e) => e.item.kind === 'status' && e.item.status in statusToState)?.item
     : undefined;
   const state: TaskState | undefined =
@@ -332,12 +339,12 @@ function App() {
                 {task.name} · {engineName[task.engine]} <span className={`mode ${task.permissionMode}`}>{modeLabel[task.permissionMode]}</span>
               </h2>
               <ModelPicker
-                model={task.sessions[0].model}
+                model={activeSession?.model}
                 models={selectedHello?.engines.find((e) => e.id === task.engine)?.models}
                 nextTurn={task.engine === 'codex'}
                 disabled={!agentOnline || state === 'completed'}
                 onChange={async (model) => {
-                  const res = await request('session.setModel', { sessionId, model: model ?? null }, selected.agentId);
+                  const res = await request('session.setModel', { sessionId: activeSession?.id, model: model ?? null }, selected.agentId);
                   if ('error' in res) setError(res.error.message);
                 }}
               />
@@ -371,8 +378,35 @@ function App() {
               <p className="muted">Task is completed and will be deleted on {new Date(task.deleteAt).toLocaleDateString()}.</p>
             )}
             {!agentOnline && <p className="warn">Agent is unreachable. The Session keeps running on it, and the history will load after reconnecting.</p>}
+            {task.sessions.length > 1 && (
+              <label className="session-pick">
+                Session{' '}
+                <select value={sessionId} onChange={(e) => setViewSession(e.target.value)}>
+                  {task.sessions.map((s, i) => (
+                    <option key={s.id} value={s.id}>
+                      {s.archived ? `${i + 1}: before a reset, read-only` : `${i + 1}: current`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <Context
+              context={viewed?.context}
+              canCompact={!readOnly && agentOnline && state === 'active' && !!viewed?.context}
+              canReset={!readOnly && agentOnline && state !== 'completed'}
+              onCompact={async () => {
+                const res = await request('session.compact', { sessionId }, selected.agentId);
+                if ('error' in res) setError(res.error.message);
+              }}
+              onReset={async () => {
+                const res = await request('task.reset', { taskId: task.id }, selected.agentId);
+                if ('error' in res) setError(res.error.message);
+                else await loadTasks(selected.agentId);
+              }}
+            />
             <Chat
               key={sessionId}
+              readOnly={readOnly}
               events={events[sessionId] ?? []}
               state={state ?? 'active'}
               engine={task.engine}

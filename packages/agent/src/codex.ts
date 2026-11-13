@@ -22,6 +22,9 @@ import type { ItemStartedNotification } from './codex-protocol/v2/ItemStartedNot
 import type { TurnCompletedNotification } from './codex-protocol/v2/TurnCompletedNotification.ts';
 import type { ModelListParams } from './codex-protocol/v2/ModelListParams.ts';
 import type { ModelListResponse } from './codex-protocol/v2/ModelListResponse.ts';
+import type { ThreadCompactStartParams } from './codex-protocol/v2/ThreadCompactStartParams.ts';
+import type { ThreadCompactStartResponse } from './codex-protocol/v2/ThreadCompactStartResponse.ts';
+import type { ThreadTokenUsageUpdatedNotification } from './codex-protocol/v2/ThreadTokenUsageUpdatedNotification.ts';
 import type { CommandExecutionRequestApprovalResponse } from './codex-protocol/v2/CommandExecutionRequestApprovalResponse.ts';
 import type { FileChangeRequestApprovalResponse } from './codex-protocol/v2/FileChangeRequestApprovalResponse.ts';
 
@@ -32,6 +35,7 @@ type RpcMethods = {
   'thread/resume': [ThreadResumeParams, ThreadResumeResponse];
   'turn/start': [TurnStartParams, TurnStartResponse];
   'model/list': [ModelListParams, ModelListResponse];
+  'thread/compact/start': [ThreadCompactStartParams, ThreadCompactStartResponse];
 };
 type Message = {
   id?: RequestId;
@@ -147,6 +151,9 @@ function completedItem(item: ItemCompletedNotification['item'], opts: EngineOpti
     case 'agentMessage':
       if (item.text) opts.onItem({ kind: 'text', text: item.text });
       return;
+    case 'contextCompaction':
+      opts.onItem({ kind: 'compact' });
+      return;
     case 'commandExecution':
       name = 'Command';
       output = item.aggregatedOutput ?? '';
@@ -243,6 +250,11 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
           fileChanges.delete(params.item.id);
           completedItem(params.item, opts);
         }
+      } else if (message.method === 'thread/tokenUsage/updated') {
+        const { threadId: thread, tokenUsage } = message.params as ThreadTokenUsageUpdatedNotification;
+        // The last request's tokens are what the context holds now; Codex has no breakdown by category.
+        if (thread === threadId)
+          opts.onContext?.({ usedTokens: tokenUsage.last.totalTokens, ...(tokenUsage.modelContextWindow ? { windowTokens: tokenUsage.modelContextWindow } : {}) });
       } else if (message.method === 'turn/completed') {
         const params = message.params as TurnCompletedNotification;
         if (params.threadId !== threadId) return;
@@ -261,6 +273,36 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
       }
     };
 
+    /** Starts or resumes the Codex thread on a new app-server; resolves with the thread id. */
+    const open = async (active: AppServer) => {
+      await active.initialize();
+      const policy: ThreadStartParams = {
+        cwd: opts.cwd,
+        approvalPolicy: opts.permissionMode === 'auto' ? 'never' : 'untrusted',
+        approvalsReviewer: 'user',
+        sandbox: opts.permissionMode === 'auto' ? 'danger-full-access' : 'workspace-write',
+        ...(model ? { model } : {}),
+        ...(platform === 'win32' && opts.permissionMode === 'ask' ? { config: { 'windows.sandbox': 'unelevated' } } : {}),
+        };
+        let result: ThreadStartResponse | ThreadResumeResponse;
+        if (threadId) {
+          try {
+            result = await active.request('thread/resume', { ...policy, threadId });
+          } catch (error) {
+            // A thread id can arrive before Codex has persisted its first rollout.
+            // Only this explicit missing-rollout error permits creating a replacement.
+            if (!(error instanceof Error) || !/^no rollout found\b/i.test(error.message) || closed) throw error;
+            result = await active.request('thread/start', policy);
+            restoreInput = true;
+          }
+        } else {
+          result = await active.request('thread/start', policy);
+        }
+        threadId = result.thread.id;
+        if (!closed) opts.onEngineSessionId(threadId);
+        return threadId;
+    };
+
     return {
       send(text) {
         if (closed) return;
@@ -268,34 +310,7 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
         try {
           if (!rpc) rpc = new AppServer(launch, opts.cwd, onEvent, fail);
           const active = rpc;
-          ready ??= (async () => {
-            await active.initialize();
-            const policy: ThreadStartParams = {
-              cwd: opts.cwd,
-              approvalPolicy: opts.permissionMode === 'auto' ? 'never' : 'untrusted',
-              approvalsReviewer: 'user',
-              sandbox: opts.permissionMode === 'auto' ? 'danger-full-access' : 'workspace-write',
-              ...(model ? { model } : {}),
-              ...(platform === 'win32' && opts.permissionMode === 'ask' ? { config: { 'windows.sandbox': 'unelevated' } } : {}),
-            };
-            let result: ThreadStartResponse | ThreadResumeResponse;
-            if (threadId) {
-              try {
-                result = await active.request('thread/resume', { ...policy, threadId });
-              } catch (error) {
-                // A thread id can arrive before Codex has persisted its first rollout.
-                // Only this explicit missing-rollout error permits creating a replacement.
-                if (!(error instanceof Error) || !/^no rollout found\b/i.test(error.message) || closed) throw error;
-                result = await active.request('thread/start', policy);
-                restoreInput = true;
-              }
-            } else {
-              result = await active.request('thread/start', policy);
-            }
-            threadId = result.thread.id;
-            if (!closed) opts.onEngineSessionId(threadId);
-            return threadId;
-          })();
+          ready ??= open(active);
           void ready.then(async (id) => {
             const input = restoreInput ? opts.initialInput ?? text : text;
             restoreInput = false;
@@ -316,6 +331,21 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
         approvals.clear();
         fileChanges.clear();
         rpc?.close();
+      },
+      compact() {
+        if (closed) return;
+        awaitingTurn = true;
+        try {
+          if (!rpc) rpc = new AppServer(launch, opts.cwd, onEvent, fail);
+          const active = rpc;
+          // A compaction needs the thread loaded, so start or resume it first, as a message would.
+          ready ??= open(active);
+          void ready.then(async (id) => {
+            if (!closed) await active.request('thread/compact/start', { threadId: id });
+          }).catch(fail);
+        } catch (error) {
+          fail(error);
+        }
       },
       // Codex takes the model per turn, so a change applies from the next turn.
       async setModel(next) {

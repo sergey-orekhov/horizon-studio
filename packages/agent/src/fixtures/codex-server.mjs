@@ -12,6 +12,7 @@ const changes = [
   { path: '/task/old.css', kind: { type: 'update', move_path: '/task/site.css' }, diff: '-old\n+new\n' },
 ];
 let policy;
+const usage = (totalTokens) => ({ totalTokens, inputTokens: totalTokens, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 });
 createInterface({ input: process.stdin }).on('line', (line) => {
   const { id, method, params, result, error } = JSON.parse(line);
   const reply = (result) => write({ id, result });
@@ -29,6 +30,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         { model: 'gpt-a', displayName: 'GPT A', isDefault: false },
         { model: 'gpt-b', displayName: 'GPT B', isDefault: true },
       ] });
+    case 'thread/compact/start':
+      assert.equal(params.threadId, threadId);
+      reply({});
+      notify('item/completed', { item: { type: 'contextCompaction', id: 'compaction' } });
+      notify('thread/tokenUsage/updated', { tokenUsage: { total: usage(900), last: usage(300), modelContextWindow: 200000 } });
+      return notify('turn/completed', { turn: { status: 'completed' } });
     case 'thread/resume':
       assert.equal(params.threadId, 'thread-1');
       if (scenario === 'missing-rollout')
@@ -65,6 +72,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       if (scenario === 'interrupted')
         return notify('turn/completed', { turn: { status: 'interrupted' } });
       notify('item/agentMessage/delta', { itemId: 'answer', delta: 'must be ignored' });
+      if (scenario === 'usage') notify('thread/tokenUsage/updated', { tokenUsage: { total: usage(1500), last: usage(1200), modelContextWindow: 200000 } });
       notify('item/completed', { item: { type: 'agentMessage', id: 'answer',
         text: scenario === 'policy' ? JSON.stringify(policy)
           : scenario === 'model' ? JSON.stringify({ thread: policy.model ?? null, turn: params.model ?? null })

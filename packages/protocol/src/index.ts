@@ -86,8 +86,22 @@ export interface Task {
   completedAt?: string;
   /** When the Agent will permanently delete the completed Task. */
   deleteAt?: string;
-  /** `model`: the Session's model; absent means the Engine's default. */
-  sessions: { id: string; model?: string }[];
+  /**
+   * The last Session is the one that works; earlier ones were reset and are `archived`, kept read-only.
+   * `model`: the Session's model; absent means the Engine's default. `context`: the last measured context window.
+   */
+  sessions: { id: string; model?: string; context?: ContextUsage; archived?: boolean }[];
+}
+
+/** How full a Session's context window is, as last measured. */
+export interface ContextUsage {
+  usedTokens: number;
+  /** Absent if the Engine does not report the window size. */
+  windowTokens?: number;
+  /** What fills the window; absent if the Engine does not break it down. */
+  categories?: { name: string; tokens: number; kind: 'used' | 'free' | 'buffer' | 'deferred' }[];
+  /** When it was measured. */
+  at: string;
 }
 
 /** A Session history item; independent of the Engine. */
@@ -101,10 +115,12 @@ export type SessionItem =
   | { kind: 'permission_answer'; requestId: string; allow: boolean; always: boolean }
   | { kind: 'turn_end'; error?: string }
   /** `interrupted`: the Agent restarted mid-turn and continues the Session on its own. */
-  | { kind: 'status'; status: 'paused' | 'resumed' | 'completed' | 'reopened' | 'interrupted' | 'auto_disabled' }
+  | { kind: 'status'; status: 'paused' | 'resumed' | 'completed' | 'reopened' | 'interrupted' | 'auto_disabled' | 'reset' }
   | { kind: 'error'; message: string }
   /** The Session's model changed; absent means the Engine's default. */
-  | { kind: 'model'; model?: string };
+  | { kind: 'model'; model?: string }
+  /** The context was compacted; token counts as the Engine reports them. */
+  | { kind: 'compact'; preTokens?: number; postTokens?: number };
 
 /**
  * A Session event. `seq` is a running number within the Session.
