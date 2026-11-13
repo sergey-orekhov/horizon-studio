@@ -23,6 +23,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         account: ['chatgpt', 'apiKey'].includes(scenario) ? { type: scenario } : null,
         requiresOpenaiAuth: scenario !== 'external',
       });
+    case 'model/list':
+      if (scenario === 'external') return write({ id, error: { code: -32600, message: 'this provider cannot list models' } });
+      return reply({ nextCursor: null, data: [
+        { model: 'gpt-a', displayName: 'GPT A', isDefault: false },
+        { model: 'gpt-b', displayName: 'GPT B', isDefault: true },
+      ] });
     case 'thread/resume':
       assert.equal(params.threadId, 'thread-1');
       if (scenario === 'missing-rollout')
@@ -52,6 +58,8 @@ createInterface({ input: process.stdin }).on('line', (line) => {
             ...(kind === 'commandExecution' ? { command: 'echo test' } : { grantRoot: null }), reason: 'test approval' },
         });
       }
+      if (scenario === 'model-missing')
+        return notify('turn/completed', { turn: { status: 'failed', error: { message: 'The model is not available', codexErrorInfo: 'modelNotFound' } } });
       if (scenario === 'error')
         return notify('turn/completed', { turn: { status: 'failed', error: { message: 'Test failure' } } });
       if (scenario === 'interrupted')
@@ -59,6 +67,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       notify('item/agentMessage/delta', { itemId: 'answer', delta: 'must be ignored' });
       notify('item/completed', { item: { type: 'agentMessage', id: 'answer',
         text: scenario === 'policy' ? JSON.stringify(policy)
+          : scenario === 'model' ? JSON.stringify({ thread: policy.model ?? null, turn: params.model ?? null })
           : scenario === 'missing-rollout' ? params.input[0].text : 'completed answer' } });
       notify('turn/completed', { turn: { status: 'completed' } });
       if (scenario === 'idle-exit') setTimeout(() => process.exit(1), 20);

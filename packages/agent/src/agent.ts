@@ -204,12 +204,13 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
       if (p.permissionMode === 'auto' && !canUseAuto)
         return fail('Only an admin can create a Task with Permission Mode auto. Choose ask, or ask an admin to set allowUserAuto in the Agent config.');
       const permissionMode = p.permissionMode ?? (canUseAuto ? defaultPermissionMode : 'ask');
+      if (p.model !== undefined && (typeof p.model !== 'string' || !p.model)) return fail('invalid model');
       const candidates = p.engine === undefined ? [...engines.keys()] : [p.engine];
       for (const id of candidates) {
         const engine = engines.get(id);
         if (!engine) return fail(`This Agent build does not support Engine "${id}". Install an Agent Update that supports this Engine.`);
         const { status } = await availability(engine);
-        if (status === 'ready') return ok(tasks.create(p.name.trim(), member, permissionMode, id));
+        if (status === 'ready') return ok(tasks.create(p.name.trim(), member, permissionMode, id, p.model));
         if (p.engine !== undefined) return fail(`Engine ${id} is ${status}`);
       }
       return fail('No ready Engine available');
@@ -248,6 +249,13 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
         if (!validSize(p.cols, p.rows)) return fail('invalid terminal size');
         shell.resize(p.cols, p.rows);
       } else shells.close((s) => s.pty === shell);
+      return ok(null);
+    }
+    case 'session.setModel': {
+      const session = tasks.session(p.sessionId, member);
+      if (!session) return fail('unknown session');
+      if (p.model !== null && (typeof p.model !== 'string' || !p.model)) return fail('invalid model');
+      await session.setModel(p.model ?? undefined);
       return ok(null);
     }
     case 'session.send': {

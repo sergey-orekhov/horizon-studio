@@ -53,3 +53,36 @@ for (const failure of ['exception', 'result'] as const) {
     second.close();
   });
 }
+
+test('Claude: the model goes to the SDK, setModel delegates, and model_not_found ends the turn and reports it', { timeout: 5_000 }, async () => {
+  let model: string | undefined;
+  const switched: (string | undefined)[] = [];
+  const runQuery = (({ prompt, options }) => {
+    model = options?.model;
+    const messages = (async function* () {
+      if (typeof prompt === 'string') return;
+      for await (const _ of prompt) {
+        yield { type: 'system', subtype: 'init', session_id: 'claude-thread' } as SDKMessage;
+        yield { type: 'assistant', error: 'model_not_found', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'synthetic' }] } } as unknown as SDKMessage;
+        yield { type: 'result', subtype: 'success', is_error: true, result: 'There is an issue with the selected model' } as SDKMessage;
+      }
+    })();
+    return Object.assign(messages, { close() { void messages.return(); }, async setModel(m?: string) { switched.push(m); } }) as unknown as Query;
+  }) as typeof query;
+  const items: SessionItem[] = [];
+  let reported!: () => void;
+  const unavailable = new Promise<void>((resolve) => { reported = resolve; });
+  const run = createClaudeEngine(runQuery)({
+    cwd: process.cwd(), permissionMode: 'ask', model: 'sonnet',
+    onItem: (item) => items.push(item), onExit: () => {}, onEngineSessionId: () => {},
+    onModelUnavailable: () => reported(),
+    askPermission: async () => ({ allow: false, always: false }),
+  });
+  assert.equal(model, 'sonnet');
+  await run.setModel!('opus');
+  assert.deepEqual(switched, ['opus']);
+  run.send('hi');
+  await unavailable;
+  assert.deepEqual(items, [{ kind: 'turn_end', error: 'There is an issue with the selected model' }], 'the synthetic message is not shown');
+  run.close();
+});

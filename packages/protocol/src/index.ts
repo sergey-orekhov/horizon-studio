@@ -55,6 +55,15 @@ export type EngineStatus = 'ready' | 'not installed' | 'no credentials' | 'unava
 export interface EngineAvailability {
   status: EngineStatus;
   loginMethod?: string;
+  /** Models the Engine offers on this machine; absent if it cannot list them. */
+  models?: EngineModel[];
+}
+
+export interface EngineModel {
+  id: string;
+  name: string;
+  /** The model the Engine uses when none is chosen, if the Engine says which. */
+  isDefault?: boolean;
 }
 
 /** `ask`: every permission request waits for the user (Session in Waiting). `auto`: everything is allowed. */
@@ -77,7 +86,8 @@ export interface Task {
   completedAt?: string;
   /** When the Agent will permanently delete the completed Task. */
   deleteAt?: string;
-  sessions: { id: string }[];
+  /** `model`: the Session's model; absent means the Engine's default. */
+  sessions: { id: string; model?: string }[];
 }
 
 /** A Session history item; independent of the Engine. */
@@ -92,7 +102,9 @@ export type SessionItem =
   | { kind: 'turn_end'; error?: string }
   /** `interrupted`: the Agent restarted mid-turn and continues the Session on its own. */
   | { kind: 'status'; status: 'paused' | 'resumed' | 'completed' | 'reopened' | 'interrupted' | 'auto_disabled' }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  /** The Session's model changed; absent means the Engine's default. */
+  | { kind: 'model'; model?: string };
 
 /**
  * A Session event. `seq` is a running number within the Session.

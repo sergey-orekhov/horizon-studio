@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { AgentStatus, EngineId, EngineStatus, PermissionMode, Task, TaskState } from '@horizon/protocol';
+import type { AgentStatus, EngineId, EngineModel, EngineStatus, PermissionMode, Task, TaskState } from '@horizon/protocol';
 import { useStudio } from './studio.ts';
 import { Chat } from './chat.tsx';
 import { Members } from './members.tsx';
@@ -30,6 +30,35 @@ const engineLabel: Record<EngineStatus, string> = {
   unavailable: 'Unavailable',
 };
 const loginLabel: Record<string, string> = { chatgpt: 'ChatGPT', apiKey: 'API key' };
+
+/** The "no model chosen" option, naming the Engine's default when it says which. */
+const defaultModelLabel = (models: EngineModel[]) => {
+  const fallback = models.find((m) => m.isDefault);
+  return fallback ? `Engine default (${fallback.name})` : 'Engine default';
+};
+
+/** The Session's model, changeable while the Task runs. Hidden if the Engine cannot list models. */
+function ModelPicker(props: { model?: string; models?: EngineModel[]; nextTurn: boolean; disabled: boolean; onChange(model?: string): void }) {
+  const { model, models, nextTurn, disabled, onChange } = props;
+  if (!models?.length) return model ? <span className="muted">Model: {model}</span> : null;
+  // A saved model the Engine no longer lists stays visible, so the picker never shows a wrong value.
+  const listed = !model || models.some((m) => m.id === model);
+  return (
+    <label className="model" title={nextTurn ? 'Codex switches models from the next turn' : 'Applies at once'}>
+      Model{' '}
+      <select value={model ?? ''} disabled={disabled} onChange={(e) => onChange(e.target.value || undefined)}>
+        <option value="">{defaultModelLabel(models)}</option>
+        {!listed && <option value={model}>{model}</option>}
+        {models.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.name}
+          </option>
+        ))}
+      </select>
+      {nextTurn && <span className="muted"> from the next turn</span>}
+    </label>
+  );
+}
 
 const completedLast = (a: Task, b: Task) => Number(a.state === 'completed') - Number(b.state === 'completed');
 
@@ -74,14 +103,15 @@ function App() {
   const engineChoices = onlineAgents.flatMap((agent) =>
     [...(agent.hello?.engines ?? [])].sort((a, b) => Number(a.id === 'codex') - Number(b.id === 'codex')).map((e) => ({
       key: JSON.stringify([agent.id, e.id]), agentId: agent.id, agentName: agent.name, engine: e.id,
-      status: e.status, loginMethod: e.loginMethod,
+      status: e.status, loginMethod: e.loginMethod, models: e.models,
     })),
   );
   const defaultChoice = engineChoices.find((choice) => choice.status === 'ready')?.key;
   const [newTaskChoice, setNewTaskChoice] = useState<string>();
   useEffect(() => setNewTaskChoice(undefined), [defaultChoice]);
   // An Agent without `permissionModes` predates the auto restriction (#41) and accepts auto from anyone.
-  const newTaskAgentId = engineChoices.find((choice) => choice.key === (newTaskChoice ?? defaultChoice))?.agentId;
+  const newTaskSelection = engineChoices.find((choice) => choice.key === (newTaskChoice ?? defaultChoice));
+  const newTaskAgentId = newTaskSelection?.agentId;
   const newTaskAuto = onlineAgents.find((a) => a.id === newTaskAgentId)?.hello?.permissionModes?.includes('auto') ?? true;
 
   // Subscribe to the selected Task's Session; after an Agent reconnect, subscribe again from the last seq.
@@ -103,7 +133,11 @@ function App() {
     const selection = engineChoices.find((choice) => choice.key === data.get('engineChoice'));
     if (!selection || selection.status !== 'ready') return;
     const { agentId, engine } = selection;
-    const res = await request('task.create', { name: data.get('name'), engine, permissionMode: data.get('permissionMode') || undefined }, agentId);
+    const res = await request(
+      'task.create',
+      { name: data.get('name'), engine, permissionMode: data.get('permissionMode') || undefined, model: data.get('model') || undefined },
+      agentId,
+    );
     if ('error' in res) return setError(res.error.message);
     form.reset();
     await loadTasks(agentId); // so the Task is listed at once, without waiting for the event
@@ -191,6 +225,16 @@ function App() {
                 </option>
               ))}
             </select>
+            {!!newTaskSelection?.models?.length && (
+              <select name="model" aria-label="Model" defaultValue="" key={newTaskSelection.key}>
+                <option value="">Model: {defaultModelLabel(newTaskSelection.models)}</option>
+                {newTaskSelection.models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    Model: {m.name}
+                  </option>
+                ))}
+              </select>
+            )}
             <select name="permissionMode" aria-label="Permission Mode" defaultValue="">
               <option value="">Permissions: Agent default</option>
               <option value="ask">Ask for permission</option>
@@ -287,6 +331,16 @@ function App() {
               <h2>
                 {task.name} · {engineName[task.engine]} <span className={`mode ${task.permissionMode}`}>{modeLabel[task.permissionMode]}</span>
               </h2>
+              <ModelPicker
+                model={task.sessions[0].model}
+                models={selectedHello?.engines.find((e) => e.id === task.engine)?.models}
+                nextTurn={task.engine === 'codex'}
+                disabled={!agentOnline || state === 'completed'}
+                onChange={async (model) => {
+                  const res = await request('session.setModel', { sessionId, model: model ?? null }, selected.agentId);
+                  if ('error' in res) setError(res.error.message);
+                }}
+              />
               {agentOnline && (
                 <div className="task-actions">
                   {state === 'active' && <button onClick={() => act('pause')}>Pause</button>}

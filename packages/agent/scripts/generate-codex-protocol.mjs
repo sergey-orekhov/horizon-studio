@@ -17,7 +17,7 @@ const roots = ['RequestId', 'InitializeParams', 'InitializeResponse', 'ServerReq
   'v2/GetAccountParams', 'v2/GetAccountResponse', 'v2/ThreadStartParams', 'v2/ThreadStartResponse',
   'v2/ThreadResumeParams', 'v2/ThreadResumeResponse', 'v2/TurnStartParams', 'v2/TurnStartResponse',
   'v2/ItemStartedNotification', 'v2/ItemCompletedNotification', 'v2/TurnCompletedNotification',
-  'v2/CommandExecutionRequestApprovalResponse', 'v2/FileChangeRequestApprovalResponse'];
+  'v2/CommandExecutionRequestApprovalResponse', 'v2/FileChangeRequestApprovalResponse', 'v2/ModelListParams', 'v2/ModelListResponse'];
 const visited = new Set();
 function copy(relative) {
   if (visited.has(relative)) return;

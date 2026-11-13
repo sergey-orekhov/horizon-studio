@@ -25,7 +25,7 @@ export function Chat({ events, state, engine, engineName, onSend, onAnswer }: Pr
     if (e.item.kind === 'permission_answer') answers.set(e.item.requestId, e.item);
   }
   const waiting = events.some((e) => e.item.kind === 'permission' && !answers.has(e.item.requestId));
-  const last = events.filter((e) => e.item.kind !== 'status').at(-1);
+  const last = events.filter((e) => e.item.kind !== 'status' && e.item.kind !== 'model').at(-1);
   const busy = !stopped && !!last && last.item.kind !== 'turn_end';
 
   const inputDisabled = stopped || (engine === 'codex' && busy);
@@ -137,6 +137,8 @@ function Item({ item, results, answers, engineName, onAnswer }: ItemProps) {
       return <div className="divider">{statusLabel[item.status]}</div>;
     case 'turn_end':
       return item.error ? <p className="warn">The turn ended with an error: {item.error}</p> : null;
+    case 'model':
+      return <div className="divider">{item.model ? `Model changed to ${item.model}` : "Model changed to the Engine default"}</div>;
     case 'error':
       return <p className="warn">{item.message}</p>;
   }

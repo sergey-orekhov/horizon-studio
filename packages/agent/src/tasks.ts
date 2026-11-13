@@ -10,6 +10,8 @@ interface StoredSession {
   engineSessionId?: string;
   /** The pause came mid-turn, so on resume the Engine must be asked to finish. */
   pausedMidTurn?: boolean;
+  /** Absent means the Engine's default. */
+  model?: string;
 }
 
 interface StoredTask extends Task {
@@ -27,6 +29,9 @@ const unavailableEngine = (id: EngineId): Engine => () => {
 };
 
 type Listener = (e: SessionEvent) => void;
+
+/** Items that record a change around the conversation rather than part of a turn. */
+const isMarker = (item: SessionItem) => item.kind === 'status' || item.kind === 'model';
 
 /**
  * Tasks and their Sessions in `<Agent Home>/tasks/<taskId>/`:
@@ -53,7 +58,7 @@ export class Tasks {
     }
   }
 
-  create(name: string, owner: Member, permissionMode: PermissionMode, engine: EngineId): Task {
+  create(name: string, owner: Member, permissionMode: PermissionMode, engine: EngineId, model?: string): Task {
     const task: StoredTask = {
       id: randomUUID(),
       name,
@@ -62,7 +67,7 @@ export class Tasks {
       permissionMode,
       state: 'active',
       createdAt: new Date().toISOString(),
-      sessions: [{ id: randomUUID() }],
+      sessions: [{ id: randomUUID(), ...(model ? { model } : {}) }],
     };
     mkdirSync(join(this.dir, task.id, 'workspace'), { recursive: true });
     mkdirSync(join(this.dir, task.id, 'sessions'));
@@ -166,6 +171,10 @@ export class Tasks {
   ): Task | string {
     const task = this.tasks.get(taskId);
     if (!task || !canSee(member, task)) return 'unknown task';
+    return this.move(task, from, to, apply);
+  }
+
+  private move(task: StoredTask, from: TaskState | TaskState[], to: TaskState, apply: (s: Session) => void): Task | string {
     if (task.state === to) return this.public(task);
     if (![from].flat().includes(task.state ?? 'active')) return `Task is ${task.state}`;
     task.state = to;
@@ -188,14 +197,17 @@ export class Tasks {
 
   private public(t: StoredTask): Task {
     const deleteAt = t.completedAt && new Date(Date.parse(t.completedAt) + this.retentionMs).toISOString();
-    return { ...t, deleteAt, sessions: t.sessions.map(({ id }) => ({ id })) };
+    return { ...t, deleteAt, sessions: t.sessions.map(({ id, model }) => ({ id, ...(model ? { model } : {}) })) };
   }
 
   private load(task: StoredTask, sessionId: string): Session {
     let s = this.sessions.get(sessionId);
     if (!s) {
       const stored = task.sessions.find((x) => x.id === sessionId)!;
-      s = new Session(this.dir, task, stored, this.engines.get(task.engine) ?? unavailableEngine(task.engine), () => this.save(task));
+      s = new Session(this.dir, task, stored, this.engines.get(task.engine) ?? unavailableEngine(task.engine), () => this.save(task), () =>
+        // An unavailable model pauses the Task; resuming after choosing another model continues the turn.
+        this.move(task, 'active', 'paused', (session) => session.stop('paused', true)),
+      );
       this.sessions.set(sessionId, s);
     }
     return s;
@@ -223,17 +235,19 @@ export class Session {
   private stored: StoredSession;
   private engine: Engine;
   private save: () => void;
+  private onModelUnavailable: () => void;
 
-  constructor(dir: string, task: StoredTask, stored: StoredSession, engine: Engine, save: () => void) {
+  constructor(dir: string, task: StoredTask, stored: StoredSession, engine: Engine, save: () => void, onModelUnavailable: () => void) {
     this.task = task;
     this.stored = stored;
     this.engine = engine;
     this.save = save;
+    this.onModelUnavailable = onModelUnavailable;
     this.cwd = join(dir, task.id, 'workspace');
     this.log = join(dir, task.id, 'sessions', `${stored.id}.jsonl`);
     const history = this.history(0);
     this.seq = history.length;
-    this.midTurn = history.filter((e) => e.item.kind !== 'status').at(-1)?.item.kind !== 'turn_end' && history.length > 0;
+    this.midTurn = history.filter((e) => !isMarker(e.item)).at(-1)?.item.kind !== 'turn_end' && history.length > 0;
   }
 
   /** A turn was running when the Agent stopped (from the log at load time). */
@@ -275,15 +289,25 @@ export class Session {
   }
 
   /** Stops the Engine; with a status, records it in the log (pause or completion). */
-  stop(status?: 'paused' | 'completed') {
+  /** `unfinished`: the turn did not complete, so resuming asks the Engine to continue it. */
+  stop(status?: 'paused' | 'completed', unfinished = false) {
     this.generation++;
     this.run?.close();
     this.run = undefined;
     // The Engine process is gone, so pending permission requests are cleared.
     this.clearPermissions();
     if (!status) return;
-    this.stored.pausedMidTurn = this.midTurn;
+    this.stored.pausedMidTurn = this.midTurn || unfinished;
     this.append({ kind: 'status', status });
+  }
+
+  /** Switches the model, for the running Engine too; `undefined` returns to the Engine's default. */
+  async setModel(model: string | undefined) {
+    if (this.task.state === 'completed') throw new Error('A completed Task cannot change its model. Reopen the Task first.');
+    await this.run?.setModel?.(model);
+    this.stored.model = model;
+    this.save();
+    this.append(model ? { kind: 'model', model } : { kind: 'model' });
   }
 
   reopened() {
@@ -339,6 +363,8 @@ export class Session {
       cwd: this.cwd,
       permissionMode: this.task.permissionMode,
       resume: this.stored.engineSessionId,
+      model: this.stored.model,
+      onModelUnavailable: () => live() && this.onModelUnavailable(),
       initialInput: this.task.engine === 'codex' ? this.history(0)
         .flatMap(({ item }) => item.kind === 'user' ? [item.text] : []).join('\n\n') : undefined,
       onExit: () => {
@@ -378,7 +404,7 @@ export class Session {
   }
 
   private append(item: SessionItem) {
-    if (item.kind !== 'status') this.midTurn = item.kind !== 'turn_end';
+    if (!isMarker(item)) this.midTurn = item.kind !== 'turn_end';
     const e: SessionEvent = { type: 'event', sessionId: this.stored.id, seq: ++this.seq, time: new Date().toISOString(), item };
     appendFileSync(this.log, JSON.stringify(e) + '\n');
     for (const l of this.listeners) l(e);
