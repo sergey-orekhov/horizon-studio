@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import type { SessionItem, StudioSessionEvent, TaskState } from '@horizon/protocol';
+import type { EngineId, SessionItem, StudioSessionEvent, TaskState } from '@horizon/protocol';
 
 type ToolResult = Extract<SessionItem, { kind: 'tool_result' }>;
 type Answer = Extract<SessionItem, { kind: 'permission_answer' }>;
@@ -8,11 +8,13 @@ export type OnAnswer = (requestId: string, allow: boolean, always: boolean) => v
 interface Props {
   events: StudioSessionEvent[];
   state: TaskState;
-  onSend(text: string): void;
+  engine: EngineId;
+  engineName: string;
+  onSend(text: string): Promise<boolean>;
   onAnswer: OnAnswer;
 }
 
-export function Chat({ events, state, onSend, onAnswer }: Props) {
+export function Chat({ events, state, engine, engineName, onSend, onAnswer }: Props) {
   const stopped = state !== 'active';
   const [text, setText] = useState('');
   const end = useRef<HTMLDivElement>(null);
@@ -26,16 +28,17 @@ export function Chat({ events, state, onSend, onAnswer }: Props) {
   const last = events.filter((e) => e.item.kind !== 'status').at(-1);
   const busy = !stopped && !!last && last.item.kind !== 'turn_end';
 
+  const inputDisabled = stopped || (engine === 'codex' && busy);
+
   // The braces are required: in new browsers scrollIntoView returns a Promise, which React would take for a cleanup.
   useEffect(() => {
     end.current?.scrollIntoView({ block: 'end' });
   }, [events.length]);
 
-  function submit(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault();
-    if (!text.trim()) return;
-    onSend(text);
-    setText('');
+    if (inputDisabled || !text.trim()) return;
+    if (await onSend(text)) setText((current) => current === text ? '' : current);
   }
 
   return (
@@ -43,14 +46,14 @@ export function Chat({ events, state, onSend, onAnswer }: Props) {
       <div className="items">
         {events.length === 0 && <p className="muted">Describe what needs to be done.</p>}
         {events.map((e) => (
-          <Item key={e.seq} item={e.item} results={results} answers={answers} onAnswer={onAnswer} />
+          <Item key={e.seq} item={e.item} results={results} answers={answers} engineName={engineName} onAnswer={onAnswer} />
         ))}
         {stopped ? (
           <p className="muted">{state === 'paused' ? 'Task is paused' : 'Task is completed'}</p>
         ) : waiting ? (
           <p className="warn">Waiting for your decision</p>
         ) : (
-          busy && <p className="muted">Claude is working…</p>
+          busy && <p className="muted">{engineName} is working…</p>
         )}
         <div ref={end} />
       </div>
@@ -66,10 +69,10 @@ export function Chat({ events, state, onSend, onAnswer }: Props) {
                 ? 'Task is completed. Reopen it to continue'
                 : 'Message (⌘/Ctrl+Enter to send)'
           }
-          disabled={stopped}
+          disabled={inputDisabled}
           rows={3}
         />
-        <button disabled={stopped}>Send</button>
+        <button disabled={inputDisabled}>Send</button>
       </form>
     </section>
   );
@@ -79,10 +82,11 @@ interface ItemProps {
   item: SessionItem;
   results: Map<string, ToolResult>;
   answers: Map<string, Answer>;
+  engineName: string;
   onAnswer: OnAnswer;
 }
 
-function Item({ item, results, answers, onAnswer }: ItemProps) {
+function Item({ item, results, answers, engineName, onAnswer }: ItemProps) {
   switch (item.kind) {
     case 'user':
       return <div className="msg user">{item.text}</div>;
@@ -105,7 +109,7 @@ function Item({ item, results, answers, onAnswer }: ItemProps) {
       return (
         <div className="permission">
           <div>
-            Claude wants to run <strong>{item.tool}</strong> <span className="muted">{summary(item.input)}</span>
+            {engineName} wants to run <strong>{item.tool}</strong> <span className="muted">{summary(item.input)}</span>
           </div>
           {item.reason && <div className="muted">{item.reason}</div>}
           <details>
@@ -149,6 +153,7 @@ const statusLabel = {
 
 function summary(input: unknown): string {
   const v = input as Record<string, unknown>;
-  const s = String(v?.command ?? v?.file_path ?? v?.pattern ?? v?.url ?? '');
+  const paths = Array.isArray(v?.paths) ? v.paths.join(', ') : undefined;
+  const s = String(v?.command ?? paths ?? v?.file_path ?? v?.pattern ?? v?.url ?? '');
   return s.length > 80 ? '…' + s.slice(-80) : s; // the end of a path matters most
 }
